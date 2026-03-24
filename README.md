@@ -30,12 +30,24 @@ pip install "ddharmon[notebook]"
 pip install "ddharmon[all]"
 ```
 
-Set your API key:
+---
 
+## Getting an API key
+
+The BioMapper2 API requires an API key. To request access, email
+[trent.leslie@phenomehealth.org](mailto:trent.leslie@phenomehealth.org).
+
+Once you have a key, set it in your environment:
 ```bash
 export BIOMAPPER_API_KEY=your-key-here
-# or add to a .env file
 ```
+
+Or add it to a `.env` file in your project root:
+```
+BIOMAPPER_API_KEY=your-key-here
+```
+
+ddharmon will pick it up automatically from either location.
 
 ---
 
