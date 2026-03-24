@@ -48,6 +48,8 @@ ruff            = "^0.4"
 mypy            = "^1.10"
 pandas-stubs    = "^2.0"
 types-tqdm      = "^4.66"
+nbconvert = "^7.17.0"
+ipykernel = "^7.2.0"
 
 [build-system]
 requires      = ["poetry-core"]
