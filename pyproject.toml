@@ -1,13 +1,13 @@
 [tool.poetry]
 name = "ddharmon"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python client for the BioMapper2 API — map biological entities to standardized knowledge graph identifiers"
 authors = ["Trent Leslie <trent@phenomehealth.org>"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/trentleslie/ddharmon"
-repository = "https://github.com/trentleslie/ddharmon"
-documentation = "https://github.com/trentleslie/ddharmon#readme"
+homepage = "https://github.com/Phenome-Health/ddharmon"
+repository = "https://github.com/Phenome-Health/ddharmon"
+documentation = "https://github.com/Phenome-Health/ddharmon#readme"
 keywords = ["bioinformatics", "metabolomics", "knowledge-graph", "biomapper", "multi-omics"]
 classifiers = [
     "Development Status :: 3 - Alpha",
