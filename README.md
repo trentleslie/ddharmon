@@ -19,15 +19,6 @@ print(result.ids_for("CHEBI"))  # ['15971']
 ```bash
 # Core (async HTTP client + Pydantic models)
 pip install ddharmon
-
-# With Metabolon preprocessing utilities (pandas, openpyxl)
-pip install "ddharmon[metabolon]"
-
-# With notebook progress bars (tqdm, nest-asyncio)
-pip install "ddharmon[notebook]"
-
-# Everything
-pip install "ddharmon[all]"
 ```
 
 ---
@@ -128,64 +119,6 @@ from ddharmon import map_entities
 results = map_entities([{"name": "L-Histidine"}], progress=True)
 ```
 
----
-
-## Metabolon extras
-
-The `ddharmon[metabolon]` extra ships helpers that replicate and generalize the
-preprocessing from the BioVector-eval Metabolon tutorial notebook.
-
-```python
-import pandas as pd
-from ddharmon import map_entities, summarize
-from ddharmon.extras.metabolon import (
-    build_mapping_queue,
-    clean_compound_name,
-    extract_hmdb_id,
-)
-from ddharmon.extras.metabolon.export import save_results, results_to_dataframe
-
-# 1. Load your Metabolon features spreadsheet
-df = pd.read_excel("Metabolon_unknown_combined_features_metadata.xlsx")
-
-# 2. Build a deduplicated mapping queue
-#    - cleans compound names (strips quotes, _CE## suffixes)
-#    - extracts HMDB hints from ms1_compound_name
-#    - deduplicates by cleaned name, tracking all feature_ids
-queue = build_mapping_queue(
-    df,
-    name_col="matched_name",
-    hint_col="ms1_compound_name",
-    limit=50,  # set to None for full run
-)
-
-print(f"{len(queue)} unique names to map")
-print(f"  with HMDB hints: {sum(1 for r in queue if r.hmdb_hint)}")
-
-# 3. Map (convert queue → API records first)
-results = map_entities(
-    [r.as_api_record() for r in queue],
-    rate_limit_delay=0.3,
-    progress=True,
-)
-
-# 4. Summarize
-summary = summarize(results)
-print(f"Resolution rate: {summary.resolution_rate:.1%}")
-
-# 5. Export
-save_results(
-    results,
-    summary=summary,
-    json_path="output/mapping.json",
-    tsv_path="output/mapping.tsv",
-)
-
-# Or work directly in pandas
-result_df = results_to_dataframe(results)
-print(result_df[["query_name", "primary_curie", "confidence_tier"]].head())
-```
-
 ### Preprocessing functions
 
 ```python
@@ -283,5 +216,3 @@ MIT — see [LICENSE](LICENSE).
 ## Related
 
 - **BioMapper2 API**: `https://biomapper.expertintheloop.io`
-- **EITL platform**: `https://expertintheloop.io`
-- **biovector-eval notebooks**: `https://github.com/trentleslie/biovector-eval`
