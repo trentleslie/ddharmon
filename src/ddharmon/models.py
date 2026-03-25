@@ -12,12 +12,20 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class MapEntityRequest(BaseModel):
-    """Payload for POST /api/v1/map/entity."""
+    """Payload for POST /api/v1/map/entity.
+
+    The ``options`` dict supports:
+        - ``annotation_mode``: "missing" | "all" | "none"
+        - ``annotators``: List of annotator names to use (e.g., ["kestrel-vector-search"])
+
+    When ``annotators`` is not specified, BioMapper2 uses all available annotators,
+    which may include fuzzy matchers that return low-confidence matches for vendor codes.
+    """
 
     name: str
     entity_type: str = "biolink:SmallMolecule"
     identifiers: dict[str, str] = Field(default_factory=dict)
-    options: dict[str, str] = Field(default_factory=lambda: {"annotation_mode": "missing"})
+    options: dict[str, Any] = Field(default_factory=lambda: {"annotation_mode": "missing"})
 
     model_config = {"populate_by_name": True}
 

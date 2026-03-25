@@ -149,6 +149,7 @@ class BioMapperClient:
         entity_type: str = "biolink:SmallMolecule",
         identifiers: dict[str, str] | None = None,
         annotation_mode: str = "missing",
+        annotators: list[str] | None = None,
     ) -> MappingResult:
         """Map a single entity name to standardized knowledge-graph identifiers.
 
@@ -159,6 +160,9 @@ class BioMapperClient:
             identifiers:     Optional pre-existing IDs used as resolver hints,
                              e.g. ``{"HMDB": "HMDB00177"}``.
             annotation_mode: ``"missing"`` (default), ``"all"``, or ``"none"``.
+            annotators:      Optional list of annotator names to use. When not
+                             specified, BioMapper2 uses all available annotators.
+                             Use ``["kestrel-vector-search"]`` for strict matching.
 
         Returns:
             A :class:`~ddharmon.models.MappingResult` with resolved identifiers.
@@ -169,11 +173,15 @@ class BioMapperClient:
             BioMapperServerError: For unrecoverable 5xx errors.
             BioMapperTimeoutError: If the request times out.
         """
+        options: dict[str, Any] = {"annotation_mode": annotation_mode}
+        if annotators is not None:
+            options["annotators"] = annotators
+
         payload = MapEntityRequest(
             name=name,
             entity_type=entity_type,
             identifiers=identifiers or {},
-            options={"annotation_mode": annotation_mode},
+            options=options,
         )
 
         hmdb_hint: str | None = (identifiers or {}).get("HMDB")
@@ -196,6 +204,7 @@ class BioMapperClient:
         rate_limit_delay: float = DEFAULT_RATE_LIMIT_DELAY,
         entity_type: str = "biolink:SmallMolecule",
         annotation_mode: str = "missing",
+        annotators: list[str] | None = None,
         progress: bool = False,
     ) -> list[MappingResult]:
         """Map a batch of entity records with rate limiting.
@@ -208,6 +217,7 @@ class BioMapperClient:
             rate_limit_delay:  Seconds to sleep between API calls.  Default 0.3.
             entity_type:       Biolink entity type for all records.
             annotation_mode:   Annotation mode for all records.
+            annotators:        Optional list of annotator names to use.
             progress:          Show a tqdm progress bar (requires ``ddharmon[notebook]``).
 
         Returns:
@@ -251,6 +261,7 @@ class BioMapperClient:
                     entity_type=entity_type,
                     identifiers=identifiers or None,
                     annotation_mode=annotation_mode,
+                    annotators=annotators,
                 )
             except Exception as exc:  # noqa: BLE001
                 result = MappingResult(

@@ -29,6 +29,7 @@ def map_entities(
     rate_limit_delay: float = 0.3,
     entity_type: str = "biolink:SmallMolecule",
     annotation_mode: str = "missing",
+    annotators: list[str] | None = None,
     progress: bool = False,
     timeout: float = 30.0,
 ) -> list[MappingResult]:
@@ -44,6 +45,10 @@ def map_entities(
         rate_limit_delay:  Seconds between successive API calls.
         entity_type:       Biolink entity type applied to all records.
         annotation_mode:   ``"missing"`` | ``"all"`` | ``"none"``.
+        annotators:        Optional list of annotator names to use. When not
+                           specified, BioMapper2 uses all available annotators.
+                           Use ``["kestrel-vector-search"]`` for strict matching
+                           that returns truly unresolved results for vendor codes.
         progress:          Show tqdm progress bar (requires ``ddharmon[notebook]``).
         timeout:           Per-request timeout in seconds.
 
@@ -61,6 +66,7 @@ def map_entities(
                 rate_limit_delay=rate_limit_delay,
                 entity_type=entity_type,
                 annotation_mode=annotation_mode,
+                annotators=annotators,
                 progress=progress,
             )
 
@@ -75,6 +81,7 @@ def map_entity(
     base_url: str | None = None,
     entity_type: str = "biolink:SmallMolecule",
     annotation_mode: str = "missing",
+    annotators: list[str] | None = None,
     timeout: float = 30.0,
 ) -> MappingResult:
     """Map a single entity name synchronously.
@@ -88,6 +95,7 @@ def map_entity(
         base_url:        Override the default API base URL.
         entity_type:     Biolink entity type.
         annotation_mode: Annotation mode.
+        annotators:      Optional list of annotator names to use.
         timeout:         Per-request timeout in seconds.
 
     Returns:
@@ -99,6 +107,7 @@ def map_entity(
         base_url=base_url,
         entity_type=entity_type,
         annotation_mode=annotation_mode,
+        annotators=annotators,
         timeout=timeout,
     )
     return results[0]

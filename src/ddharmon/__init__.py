@@ -32,7 +32,7 @@ from ddharmon.exceptions import (
 from ddharmon.mapper import map_entities, map_entity, summarize
 from ddharmon.models import MappingResult, MappingSummary
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     # Client
