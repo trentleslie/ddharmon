@@ -473,7 +473,11 @@ class BioMapperClient:
             :class:`~ddharmon.models.MappingResult` per NDJSON line. The
             ``hmdb_hint`` attribute is always ``None`` on yielded results — the
             server processes the dataset opaquely and the client has no
-            per-row hint to echo back.
+            per-row hint to echo back. The ``confidence_score`` attribute is
+            also ``None``: the dataset-stream endpoint emits a slimmer
+            per-row payload than ``/map/batch`` and omits the ``assigned_ids``
+            block where per-annotator scores live. Use :func:`map_entity` /
+            :func:`map_entities` if you need confidence scores.
 
         Raises:
             ValueError: If a value in ``provided_id_columns`` or ``annotators``
