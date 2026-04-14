@@ -19,8 +19,12 @@ from ddharmon.exceptions import (
     BioMapperServerError,
     BioMapperTimeoutError,
 )
-from tests.conftest import make_batch_entry, make_batch_response
-
+from tests.conftest import (
+    make_batch_entry,
+    make_batch_response,
+    make_ndjson_body,
+    make_truncating_stream,
+)
 
 BASE_URL = "https://biomapper.expertintheloop.io/api/v1"
 
@@ -723,3 +727,530 @@ class TestMapEntities:
         # Position-based: query_name matches request position, not response.name
         assert results[0].query_name == "first-sent"
         assert results[1].query_name == "second-sent"
+
+
+# ---------------------------------------------------------------------------
+# Dataset file streaming (POST /map/dataset/stream)
+# ---------------------------------------------------------------------------
+
+
+DATASET_URL = f"{BASE_URL}/map/dataset/stream"
+
+
+@pytest.fixture()
+def tsv_path(tmp_path: Any) -> Any:
+    p = tmp_path / "small.tsv"
+    p.write_text("name\thmdb_id\nL-Histidine\tHMDB00177\nGlucose\tHMDB00122\n")
+    return p
+
+
+@pytest.fixture()
+def csv_path(tmp_path: Any) -> Any:
+    p = tmp_path / "small.csv"
+    p.write_text("name,hmdb_id\nL-Histidine,HMDB00177\n")
+    return p
+
+
+class TestMapDatasetFileIter:
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_yields_results_in_order(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        body = make_ndjson_body(
+            [
+                make_batch_entry("L-Histidine"),
+                make_batch_entry("Glucose"),
+                make_batch_entry("Z1005800534", resolved=False),
+            ]
+        )
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(
+                200, content=body, headers={"Content-Type": "application/x-ndjson"}
+            )
+        )
+        async with client:
+            results = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        assert [r.query_name for r in results] == [
+            "L-Histidine",
+            "Glucose",
+            "Z1005800534",
+        ]
+        assert results[0].resolved is True
+        assert results[0].primary_curie == "RM:0129894"
+        assert results[2].resolved is False
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_multipart_field_name_and_content_type_tsv(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        route = respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+        async with client:
+            _ = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        request = route.calls.last.request
+        body = request.content.decode("utf-8", errors="ignore")
+        assert 'name="file"' in body
+        assert tsv_path.name in body
+        assert "text/tab-separated-values" in body
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_csv_content_type(
+        self, client: BioMapperClient, csv_path: Any
+    ) -> None:
+        route = respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+        async with client:
+            _ = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    csv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        body = route.calls.last.request.content.decode("utf-8", errors="ignore")
+        assert "text/csv" in body
+        assert "text/tab-separated-values" not in body
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_unknown_extension_falls_back_to_octet_stream(
+        self, client: BioMapperClient, tmp_path: Any
+    ) -> None:
+        p = tmp_path / "data.xyz"
+        p.write_text("name\n")
+        route = respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+        async with client:
+            _ = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    p, name_column="name", provided_id_columns=["hmdb_id"]
+                )
+            ]
+        body = route.calls.last.request.content.decode("utf-8", errors="ignore")
+        assert "application/octet-stream" in body
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_query_params(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        route = respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+        async with client:
+            _ = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    entity_type="biolink:SmallMolecule",
+                    name_column="name",
+                    provided_id_columns=["hmdb_id", "chebi_id"],
+                    annotation_mode="all",
+                    annotators=["a", "b"],
+                    vocab="chebi",
+                )
+            ]
+        params = route.calls.last.request.url.params
+        assert params["entity_type"] == "biolink:SmallMolecule"
+        assert params["name_column"] == "name"
+        assert params["provided_id_columns"] == "hmdb_id,chebi_id"
+        assert params["annotation_mode"] == "all"
+        assert params["annotators"] == "a,b"
+        assert params["vocab"] == "chebi"
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_optional_params_omitted_when_none(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        route = respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+        async with client:
+            _ = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        params = route.calls.last.request.url.params
+        assert "annotators" not in params
+        assert "vocab" not in params
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_empty_stream_returns_nothing(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+        async with client:
+            results = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        assert results == []
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_blank_lines_between_entries_skipped(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        body = (
+            json.dumps(make_batch_entry("A")).encode("utf-8")
+            + b"\n\n"
+            + json.dumps(make_batch_entry("B")).encode("utf-8")
+            + b"\n"
+        )
+        respx.post(DATASET_URL).mock(return_value=httpx.Response(200, content=body))
+        async with client:
+            results = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        assert len(results) == 2
+        assert [r.query_name for r in results] == ["A", "B"]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_malformed_line_yields_error_result_and_continues(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        # Middle line is malformed JSON; surrounding lines should still resolve.
+        body = (
+            json.dumps(make_batch_entry("A")).encode("utf-8")
+            + b"\n"
+            + b"{not valid json"
+            + b"\n"
+            + json.dumps(make_batch_entry("C")).encode("utf-8")
+            + b"\n"
+        )
+        respx.post(DATASET_URL).mock(return_value=httpx.Response(200, content=body))
+        async with client:
+            results = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        assert len(results) == 3
+        assert results[0].query_name == "A" and results[0].resolved is True
+        assert results[1].query_name == "<unknown>"
+        assert results[1].error is not None
+        assert results[2].query_name == "C" and results[2].resolved is True
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_422_raises_http_status_error_before_yield(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(422, json={"detail": "bad column"})
+        )
+        async with client:
+            gen = client.map_dataset_file_iter(
+                tsv_path, name_column="name", provided_id_columns=["hmdb_id"]
+            )
+            with pytest.raises(httpx.HTTPStatusError):
+                _ = [r async for r in gen]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_401_raises_auth_error_before_yield(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        respx.post(DATASET_URL).mock(return_value=httpx.Response(401))
+        async with client:
+            with pytest.raises(BioMapperAuthError):
+                _ = [
+                    r
+                    async for r in client.map_dataset_file_iter(
+                        tsv_path,
+                        name_column="name",
+                        provided_id_columns=["hmdb_id"],
+                    )
+                ]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_500_raises_server_error_before_yield(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        respx.post(DATASET_URL).mock(return_value=httpx.Response(500, text="boom"))
+        async with client:
+            with pytest.raises(BioMapperServerError):
+                _ = [
+                    r
+                    async for r in client.map_dataset_file_iter(
+                        tsv_path,
+                        name_column="name",
+                        provided_id_columns=["hmdb_id"],
+                    )
+                ]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_429_raises_rate_limit_before_yield(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(429, headers={"Retry-After": "2"})
+        )
+        async with client:
+            with pytest.raises(BioMapperRateLimitError):
+                _ = [
+                    r
+                    async for r in client.map_dataset_file_iter(
+                        tsv_path,
+                        name_column="name",
+                        provided_id_columns=["hmdb_id"],
+                    )
+                ]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_connect_timeout_wrapped_as_bio_timeout(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        respx.post(DATASET_URL).mock(side_effect=httpx.ConnectTimeout("slow"))
+        async with client:
+            with pytest.raises(BioMapperTimeoutError):
+                _ = [
+                    r
+                    async for r in client.map_dataset_file_iter(
+                        tsv_path,
+                        name_column="name",
+                        provided_id_columns=["hmdb_id"],
+                    )
+                ]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_mid_stream_read_timeout_propagates_after_partial(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        # Two good NDJSON lines delivered, then the stream raises ReadTimeout
+        # mid-response. The iterator should yield both good lines first, then
+        # raise on the next __anext__.
+        stream = make_truncating_stream(
+            [make_batch_entry("A"), make_batch_entry("B")],
+            httpx.ReadTimeout("mid-stream"),
+        )
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, stream=stream)
+        )
+        async with client:
+            gen = client.map_dataset_file_iter(
+                tsv_path, name_column="name", provided_id_columns=["hmdb_id"]
+            )
+            collected: list[Any] = []
+            with pytest.raises(httpx.ReadTimeout):
+                async for r in gen:
+                    collected.append(r)
+            assert len(collected) == 2
+            assert [r.query_name for r in collected] == ["A", "B"]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_mid_stream_remote_protocol_error_propagates(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        # Simulate a connection truncation that http-level surfaces as
+        # RemoteProtocolError after some lines got through.
+        stream = make_truncating_stream(
+            [make_batch_entry("A")],
+            httpx.RemoteProtocolError("truncated"),
+        )
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, stream=stream)
+        )
+        async with client:
+            gen = client.map_dataset_file_iter(
+                tsv_path, name_column="name", provided_id_columns=["hmdb_id"]
+            )
+            collected: list[Any] = []
+            with pytest.raises(httpx.RemoteProtocolError):
+                async for r in gen:
+                    collected.append(r)
+            assert len(collected) == 1
+
+    @pytest.mark.asyncio()
+    async def test_rejects_comma_in_provided_id_columns(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        async with client:
+            with pytest.raises(ValueError, match="must not contain commas"):
+                _ = [
+                    r
+                    async for r in client.map_dataset_file_iter(
+                        tsv_path,
+                        name_column="name",
+                        provided_id_columns=["foo,bar"],
+                    )
+                ]
+
+    @pytest.mark.asyncio()
+    async def test_rejects_comma_in_annotators(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        async with client:
+            with pytest.raises(ValueError, match="must not contain commas"):
+                _ = [
+                    r
+                    async for r in client.map_dataset_file_iter(
+                        tsv_path,
+                        name_column="name",
+                        provided_id_columns=["hmdb_id"],
+                        annotators=["valid", "a,b"],
+                    )
+                ]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_cancelled_error_propagates(
+        self, client: BioMapperClient, tsv_path: Any
+    ) -> None:
+        # Drive cancellation directly and assert CancelledError propagates
+        # unwrapped out of the iterator (not converted to BioMapperError).
+        body = make_ndjson_body([make_batch_entry(f"x{i}") for i in range(10)])
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=body)
+        )
+
+        caught: list[type[BaseException]] = []
+
+        async def consume() -> None:
+            async with client:
+                async for _r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                ):
+                    await asyncio.sleep(0.05)
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0)  # let the task start
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            caught.append(asyncio.CancelledError)
+        assert caught == [asyncio.CancelledError]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_reusable_across_calls(
+        self, client: BioMapperClient, tsv_path: Any, csv_path: Any
+    ) -> None:
+        # Sequential reuse on the same open client should work.
+        body1 = make_ndjson_body([make_batch_entry("only-in-first")])
+        body2 = make_ndjson_body([make_batch_entry("only-in-second")])
+        respx.post(DATASET_URL).mock(
+            side_effect=[
+                httpx.Response(200, content=body1),
+                httpx.Response(200, content=body2),
+            ]
+        )
+        async with client:
+            r1 = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    tsv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+            r2 = [
+                r
+                async for r in client.map_dataset_file_iter(
+                    csv_path,
+                    name_column="name",
+                    provided_id_columns=["hmdb_id"],
+                )
+            ]
+        assert [r.query_name for r in r1] == ["only-in-first"]
+        assert [r.query_name for r in r2] == ["only-in-second"]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_early_break_cleanup_deterministic(
+        self, client: BioMapperClient, tmp_path: Any
+    ) -> None:
+        # Hold the generator in an outer variable across assertions to defeat
+        # any GC-driven cleanup; explicitly aclose() and verify the underlying
+        # file handle is closed.
+        p = tmp_path / "fh_lifecycle.tsv"
+        p.write_text("name\thmdb_id\nA\t1\nB\t2\nC\t3\n")
+        body = make_ndjson_body(
+            [
+                make_batch_entry("A"),
+                make_batch_entry("B"),
+                make_batch_entry("C"),
+                make_batch_entry("D"),
+                make_batch_entry("E"),
+            ]
+        )
+        respx.post(DATASET_URL).mock(
+            return_value=httpx.Response(200, content=body)
+        )
+
+        opened_handles: list[Any] = []
+        real_open = type(p).open
+
+        def tracking_open(self: Any, *args: Any, **kwargs: Any) -> Any:
+            fh = real_open(self, *args, **kwargs)
+            opened_handles.append(fh)
+            return fh
+
+        async with client:
+            import unittest.mock as _mock
+
+            with _mock.patch.object(type(p), "open", tracking_open):
+                gen = client.map_dataset_file_iter(
+                    p, name_column="name", provided_id_columns=["hmdb_id"]
+                )
+                count = 0
+                async for _r in gen:
+                    count += 1
+                    if count >= 2:
+                        break
+                # Before aclose, the handle is still live inside the generator.
+                assert len(opened_handles) == 1
+                assert opened_handles[0].closed is False
+                await gen.aclose()
+                assert opened_handles[0].closed is True

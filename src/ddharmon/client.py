@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import warnings
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from ddharmon.exceptions import (
     BioMapperAuthError,
@@ -24,6 +27,7 @@ from ddharmon.models import (
     EntityTypeInfo,
     MapEntityRequest,
     MappingResult,
+    RawApiResult,
     VocabularyInfo,
 )
 
@@ -433,3 +437,184 @@ class BioMapperClient:
         if annotators is not None:
             options["annotators"] = annotators
         return options
+
+    async def map_dataset_file_iter(
+        self,
+        path: Path,
+        *,
+        name_column: str,
+        provided_id_columns: list[str],
+        entity_type: str = "biolink:SmallMolecule",
+        annotation_mode: str = "missing",
+        annotators: list[str] | None = None,
+        vocab: str | None = None,
+    ) -> AsyncIterator[MappingResult]:
+        """Stream per-row mapping results from ``POST /map/dataset/stream``.
+
+        Uploads ``path`` as a multipart body and yields :class:`MappingResult`
+        per NDJSON line as the server emits them. The iterator is the
+        streaming primitive used by :func:`ddharmon.map_dataset_file_sync`
+        and is also available to any async caller (e.g. the Entity Linker UI).
+
+        Args:
+            path:                Path to a TSV or CSV file.
+            name_column:         Column name containing entity names (required).
+            provided_id_columns: Columns carrying pre-existing identifiers, e.g.
+                                 ``["hmdb_id"]`` (required). Values must not
+                                 contain commas — see Raises below.
+            entity_type:         Biolink entity type applied to every row.
+            annotation_mode:     ``"missing"`` | ``"all"`` | ``"none"``.
+            annotators:          Optional list of annotator names. ``None``
+                                 uses all available annotators. Values must
+                                 not contain commas.
+            vocab:               Optional vocabulary hint forwarded to the API.
+
+        Yields:
+            :class:`~ddharmon.models.MappingResult` per NDJSON line. The
+            ``hmdb_hint`` attribute is always ``None`` on yielded results — the
+            server processes the dataset opaquely and the client has no
+            per-row hint to echo back.
+
+        Raises:
+            ValueError: If a value in ``provided_id_columns`` or ``annotators``
+                contains a comma — these would silently split at the wire and
+                corrupt the request.
+            BioMapperAuthError: On initial-request 401/403.
+            BioMapperRateLimitError: On initial-request 429.
+            BioMapperServerError: On initial-request 5xx.
+            BioMapperTimeoutError: On connect timeout (initial request only;
+                mid-stream timeouts propagate as the raw ``httpx`` exception).
+            httpx.HTTPStatusError: On initial-request 4xx other than 401/403/429
+                (notably 422 validation errors from the server).
+            httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.NetworkError:
+                On mid-stream transport failures. Values yielded before the
+                failure are delivered; the exception propagates when the
+                caller awaits the next ``__anext__``.
+
+        Stream truncation:
+            If the connection closes without a trailing newline on the final
+            line, ``aiter_lines()`` raises ``httpx.RemoteProtocolError`` after
+            yielding all complete lines (treated as transport-level — propagates).
+            If the server emits a syntactically-incomplete line followed by
+            a newline, the line reaches the parser and is yielded as a
+            per-row error :class:`MappingResult` (treated as per-record).
+
+        Concurrency:
+            Runs one upload + stream through the shared ``httpx.AsyncClient``.
+            Running two ``map_dataset_file_iter`` calls concurrently on the
+            same :class:`BioMapperClient` (e.g. via ``asyncio.gather``) may
+            serialize or deadlock depending on the connection-pool
+            configuration. For concurrent dataset jobs, construct a separate
+            :class:`BioMapperClient` per job.
+
+        Recommended timeout for long runs:
+            The default ``timeout=30.0`` applies per-phase; the read phase
+            times out if the server pauses more than 30 s between NDJSON
+            lines. For datasets whose server-side annotator lookups exceed
+            30 s, construct the client with
+            ``BioMapperClient(timeout=httpx.Timeout(read=None, connect=30.0))``.
+        """
+        params = self._dataset_query_params(
+            entity_type=entity_type,
+            name_column=name_column,
+            provided_id_columns=provided_id_columns,
+            annotation_mode=annotation_mode,
+            annotators=annotators,
+            vocab=vocab,
+        )
+        content_type = self._dataset_content_type(path)
+
+        # AsyncExitStack enforces LIFO cleanup: the HTTP stream context exits
+        # first (any httpx finalization that reads from fh completes), and
+        # only then does the file close. If cancellation fires during TLS
+        # handshake or initial response-headers read, both resources unwind
+        # correctly — no chance of closing fh while httpx still holds it.
+        async with contextlib.AsyncExitStack() as stack:
+            fh = stack.enter_context(path.open("rb"))
+            try:
+                response = await stack.enter_async_context(
+                    self._http.stream(
+                        "POST",
+                        f"{self._base_url}/map/dataset/stream",
+                        files={"file": (path.name, fh, content_type)},
+                        params=params,
+                    )
+                )
+            except httpx.TimeoutException as exc:
+                raise BioMapperTimeoutError(
+                    f"Dataset stream request timed out for {path.name!r}"
+                ) from exc
+
+            # `_raise_for_status` reads `response.text` on 5xx; that errors on a
+            # still-streaming response. Eagerly consume the body for non-2xx
+            # so the shared error mapper works uniformly for streaming and
+            # non-streaming callers.
+            if response.status_code >= 400:
+                await response.aread()
+            self._raise_for_status(response)
+
+            async for line in response.aiter_lines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    raw = RawApiResult.model_validate_json(stripped)
+                except ValidationError as exc:
+                    yield MappingResult(
+                        query_name="<unknown>",
+                        error=f"Failed to parse NDJSON line: {exc}",
+                    )
+                    continue
+                yield MappingResult.from_batch_entry(
+                    raw, query_name=raw.name or "", hmdb_hint=None
+                )
+
+    @staticmethod
+    def _dataset_query_params(
+        *,
+        entity_type: str,
+        name_column: str,
+        provided_id_columns: list[str],
+        annotation_mode: str,
+        annotators: list[str] | None,
+        vocab: str | None,
+    ) -> dict[str, str]:
+        """Serialize dataset endpoint query params.
+
+        ``provided_id_columns`` and ``annotators`` are joined with commas for
+        the wire form. Commas inside any value are rejected as a ``ValueError``
+        at the boundary — silently splitting ``"iupac,name"`` into two
+        columns would corrupt the request undetectably.
+        """
+        BioMapperClient._reject_commas("provided_id_columns", provided_id_columns)
+        if annotators is not None:
+            BioMapperClient._reject_commas("annotators", annotators)
+
+        params: dict[str, str] = {
+            "entity_type": entity_type,
+            "name_column": name_column,
+            "provided_id_columns": ",".join(provided_id_columns),
+            "annotation_mode": annotation_mode,
+        }
+        if annotators is not None:
+            params["annotators"] = ",".join(annotators)
+        if vocab is not None:
+            params["vocab"] = vocab
+        return params
+
+    @staticmethod
+    def _reject_commas(param_name: str, values: list[str]) -> None:
+        for v in values:
+            if "," in v:
+                raise ValueError(
+                    f"{param_name!r} values must not contain commas: {v!r}"
+                )
+
+    @staticmethod
+    def _dataset_content_type(path: Path) -> str:
+        suffix = path.suffix.lower()
+        if suffix == ".tsv":
+            return "text/tab-separated-values"
+        if suffix == ".csv":
+            return "text/csv"
+        return "application/octet-stream"

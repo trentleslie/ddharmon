@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import pytest
-
 
 SAMPLE_API_RESPONSE: dict[str, Any] = {
     "result": {
@@ -104,6 +106,44 @@ def make_batch_response(entries: list[dict[str, Any]]) -> dict[str, Any]:
             "failed": sum(1 for e in entries if e.get("error")),
         },
     }
+
+
+def make_ndjson_body(entries: list[dict[str, Any]]) -> bytes:
+    """Serialize per-entity dicts as newline-delimited JSON bytes.
+
+    Mirrors what `/map/dataset/stream` emits, one entry per line.
+    """
+    return b"\n".join(json.dumps(e).encode("utf-8") for e in entries) + b"\n"
+
+
+class TruncatingByteStream(httpx.AsyncByteStream):
+    """Async byte stream that yields given byte chunks, then raises.
+
+    Useful for simulating mid-stream transport failures against respx.
+    Each chunk is delivered independently so `aiter_lines()` sees real
+    streaming boundaries rather than a single buffered blob.
+    """
+
+    def __init__(self, chunks: list[bytes], exc: Exception) -> None:
+        self._chunks = chunks
+        self._exc = exc
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+        raise self._exc
+
+
+def make_truncating_stream(
+    good_entries: list[dict[str, Any]], exc: Exception
+) -> TruncatingByteStream:
+    """Build a TruncatingByteStream that yields `good_entries` then raises `exc`.
+
+    Each good entry is a separate chunk so aiter_lines() sees it complete
+    before the raise. Use for mid-stream-failure scenarios.
+    """
+    chunks = [json.dumps(e).encode("utf-8") + b"\n" for e in good_entries]
+    return TruncatingByteStream(chunks, exc)
 
 
 @pytest.fixture()
