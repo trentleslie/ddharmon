@@ -63,6 +63,51 @@ class RawApiResponse(BaseModel):
     metadata: ApiMetadata = Field(default_factory=ApiMetadata)
 
 
+class BatchMappingResponse(BaseModel):
+    """Top-level envelope returned by POST /map/batch.
+
+    The per-entity ``results`` list uses the flat :class:`RawApiResult` shape
+    (not :class:`RawApiResponse` — the batch endpoint does not wrap each entry
+    in its own envelope).
+    """
+
+    results: list[RawApiResult] = Field(default_factory=list)
+    metadata: ApiMetadata = Field(default_factory=ApiMetadata)
+    summary: dict[str, int] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Discovery endpoint models
+# ---------------------------------------------------------------------------
+
+
+class EntityTypeInfo(BaseModel):
+    """One Biolink entity type together with its known aliases.
+
+    The API returns entity types and a flat ``{alias: type}`` lookup; the
+    client inverts that to per-type alias lists for friendlier enumeration.
+    """
+
+    type: str
+    aliases: list[str] = Field(default_factory=list)
+
+
+class AnnotatorInfo(BaseModel):
+    """Metadata about one available annotator."""
+
+    slug: str
+    name: str
+    description: str | None = None
+
+
+class VocabularyInfo(BaseModel):
+    """Metadata about one supported identifier vocabulary."""
+
+    prefix: str
+    iri: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Derived / user-facing model
 # ---------------------------------------------------------------------------
@@ -102,33 +147,87 @@ class MappingResult(BaseModel):
         query_name: str,
         hmdb_hint: str | None = None,
     ) -> MappingResult:
-        """Build a :class:`MappingResult` from a raw API response dict.
+        """Build a :class:`MappingResult` from a single-entity API response dict.
 
         Args:
-            response:   Parsed JSON dict from the API.
+            response:   Parsed JSON dict from the API (``{"result": ..., "metadata": ...}``).
             query_name: The name that was submitted.
             hmdb_hint:  Any HMDB identifier that was passed as a hint.
 
         Returns:
             A populated :class:`MappingResult`.
         """
+        # Surface-level error (network / HTTP, captured before reaching this method)
+        if "error" in response and "result" not in response:
+            return cls(
+                query_name=query_name,
+                hmdb_hint=hmdb_hint,
+                error=str(response["error"]),
+            )
+
+        parsed = RawApiResponse.model_validate(response)
+
+        if parsed.result is None:
+            return cls(
+                query_name=query_name,
+                hmdb_hint=hmdb_hint,
+                error="Empty result from API",
+                raw_response=parsed,
+            )
+
+        return cls._build_from_raw_result(
+            parsed.result,
+            query_name=query_name,
+            hmdb_hint=hmdb_hint,
+            raw_response=parsed,
+        )
+
+    @classmethod
+    def from_batch_entry(
+        cls,
+        raw: RawApiResult,
+        query_name: str,
+        hmdb_hint: str | None = None,
+    ) -> MappingResult:
+        """Build a :class:`MappingResult` from one entry in a batch response.
+
+        The batch endpoint (``POST /map/batch``) returns each result as a flat
+        :class:`RawApiResult`, not wrapped in an envelope. ``raw_response`` is
+        not populated on batch-derived results — callers needing full envelope
+        data should use the single-entity endpoint.
+
+        Args:
+            raw:        One entry from ``BatchMappingResponse.results``.
+            query_name: The name that was submitted for this entry.
+            hmdb_hint:  Any HMDB identifier that was passed as a hint.
+
+        Returns:
+            A populated :class:`MappingResult`.
+        """
+        return cls._build_from_raw_result(
+            raw, query_name=query_name, hmdb_hint=hmdb_hint, raw_response=None
+        )
+
+    @classmethod
+    def _build_from_raw_result(
+        cls,
+        r: RawApiResult,
+        *,
+        query_name: str,
+        hmdb_hint: str | None,
+        raw_response: RawApiResponse | None,
+    ) -> MappingResult:
+        """Shared extraction from a :class:`RawApiResult` to a user-facing result.
+
+        Used by both :meth:`from_api_response` (envelope-wrapped) and
+        :meth:`from_batch_entry` (flat-shaped). The difference is upstream:
+        envelope handling happens in the caller.
+        """
         base: dict[str, Any] = {
             "query_name": query_name,
             "hmdb_hint": hmdb_hint,
+            "raw_response": raw_response,
         }
-
-        # Surface-level error (network / HTTP, captured before reaching this method)
-        if "error" in response and "result" not in response:
-            base["error"] = str(response["error"])
-            return cls(**base)
-
-        parsed = RawApiResponse.model_validate(response)
-        base["raw_response"] = parsed
-
-        r = parsed.result
-        if r is None:
-            base["error"] = "Empty result from API"
-            return cls(**base)
 
         if r.error:
             base["error"] = r.error
