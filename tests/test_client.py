@@ -49,6 +49,181 @@ class TestBioMapperClientInit:
         assert client._api_key == "explicit-key"
 
 
+class TestListEntityTypes:
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_inverts_alias_map(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/entity-types").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "entity_types": ["biolink:SmallMolecule", "biolink:Protein"],
+                    "aliases": {
+                        "metabolite": "biolink:SmallMolecule",
+                        "compound": "biolink:SmallMolecule",
+                        "gene": "biolink:Protein",
+                    },
+                },
+            )
+        )
+        async with client:
+            result = await client.list_entity_types()
+
+        assert len(result) == 2
+        assert result[0].type == "biolink:SmallMolecule"
+        assert result[0].aliases == ["compound", "metabolite"]  # sorted
+        assert result[1].type == "biolink:Protein"
+        assert result[1].aliases == ["gene"]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_type_with_zero_aliases(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/entity-types").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "entity_types": ["biolink:Disease"],
+                    "aliases": {},
+                },
+            )
+        )
+        async with client:
+            result = await client.list_entity_types()
+
+        assert len(result) == 1
+        assert result[0].type == "biolink:Disease"
+        assert result[0].aliases == []
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_alias_pointing_at_unknown_type_is_dropped_from_output(
+        self, client: BioMapperClient
+    ) -> None:
+        # If the server's alias map references a type not in entity_types,
+        # the alias has nowhere to land in our per-type output. This documents
+        # that behavior rather than silently creating a phantom type entry.
+        respx.get(f"{BASE_URL}/entity-types").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "entity_types": ["biolink:SmallMolecule"],
+                    "aliases": {
+                        "metabolite": "biolink:SmallMolecule",
+                        "gene": "biolink:Protein",  # not in entity_types
+                    },
+                },
+            )
+        )
+        async with client:
+            result = await client.list_entity_types()
+
+        assert [info.type for info in result] == ["biolink:SmallMolecule"]
+        assert result[0].aliases == ["metabolite"]
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_auth_error(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/entity-types").mock(return_value=httpx.Response(401))
+        async with client:
+            with pytest.raises(BioMapperAuthError):
+                await client.list_entity_types()
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_server_error(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/entity-types").mock(return_value=httpx.Response(500, text="boom"))
+        async with client:
+            with pytest.raises(BioMapperServerError):
+                await client.list_entity_types()
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_timeout(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/entity-types").mock(side_effect=httpx.ReadTimeout("slow"))
+        async with client:
+            with pytest.raises(BioMapperTimeoutError):
+                await client.list_entity_types()
+
+
+class TestListAnnotators:
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_returns_annotator_list(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/annotators").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "annotators": [
+                        {
+                            "slug": "kestrel-vector-search",
+                            "name": "Kestrel Vector Search",
+                            "description": "Vector similarity over compound names",
+                        },
+                        {"slug": "metabolomics-workbench", "name": "Metabolomics Workbench"},
+                    ]
+                },
+            )
+        )
+        async with client:
+            result = await client.list_annotators()
+
+        assert len(result) == 2
+        assert result[0].slug == "kestrel-vector-search"
+        assert result[0].description is not None
+        assert result[1].slug == "metabolomics-workbench"
+        assert result[1].description is None  # optional field omitted
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_auth_error(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/annotators").mock(return_value=httpx.Response(401))
+        async with client:
+            with pytest.raises(BioMapperAuthError):
+                await client.list_annotators()
+
+
+class TestListVocabularies:
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_returns_vocabulary_list(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/vocabularies").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "vocabularies": [
+                        {
+                            "prefix": "CHEBI",
+                            "iri": "http://purl.obolibrary.org/obo/CHEBI_",
+                            "aliases": ["chebi"],
+                        },
+                        {"prefix": "HMDB"},  # no iri, no aliases
+                        {"prefix": "PUBCHEM", "aliases": []},
+                    ],
+                    "count": 3,
+                },
+            )
+        )
+        async with client:
+            result = await client.list_vocabularies()
+
+        assert len(result) == 3
+        assert result[0].prefix == "CHEBI"
+        assert result[0].iri == "http://purl.obolibrary.org/obo/CHEBI_"
+        assert result[0].aliases == ["chebi"]
+        assert result[1].prefix == "HMDB"
+        assert result[1].iri is None
+        assert result[1].aliases == []
+        assert result[2].aliases == []
+
+    @pytest.mark.asyncio()
+    @respx.mock
+    async def test_server_error(self, client: BioMapperClient) -> None:
+        respx.get(f"{BASE_URL}/vocabularies").mock(return_value=httpx.Response(500))
+        async with client:
+            with pytest.raises(BioMapperServerError):
+                await client.list_vocabularies()
+
+
 class TestHealthCheck:
     @pytest.mark.asyncio()
     @respx.mock

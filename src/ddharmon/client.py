@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import defaultdict
 from typing import Any
 
 import httpx
@@ -15,7 +16,13 @@ from ddharmon.exceptions import (
     BioMapperServerError,
     BioMapperTimeoutError,
 )
-from ddharmon.models import MapEntityRequest, MappingResult
+from ddharmon.models import (
+    AnnotatorInfo,
+    EntityTypeInfo,
+    MapEntityRequest,
+    MappingResult,
+    VocabularyInfo,
+)
 
 DEFAULT_BASE_URL = "https://biomapper.expertintheloop.io/api/v1"
 DEFAULT_TIMEOUT = 30.0
@@ -124,6 +131,70 @@ class BioMapperClient:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    async def list_entity_types(self) -> list[EntityTypeInfo]:
+        """Return the Biolink entity types supported by the API.
+
+        The server returns a flat ``{alias: type}`` lookup; this method
+        inverts it into per-type :class:`EntityTypeInfo` objects with
+        sorted alias lists — the shape users actually want when enumerating.
+
+        Returns:
+            List of :class:`EntityTypeInfo` in the order the server returned
+            ``entity_types``; each ``aliases`` list is sorted alphabetically.
+
+        Raises:
+            BioMapperAuthError: If the key is rejected.
+            BioMapperServerError: For unrecoverable 5xx errors.
+            BioMapperTimeoutError: If the request times out.
+        """
+        try:
+            response = await self._http.get(f"{self._base_url}/entity-types")
+        except httpx.TimeoutException as exc:
+            raise BioMapperTimeoutError("list_entity_types timed out") from exc
+        self._raise_for_status(response)
+        payload = response.json()
+
+        inverted: dict[str, list[str]] = defaultdict(list)
+        for alias, type_name in payload.get("aliases", {}).items():
+            inverted[type_name].append(alias)
+
+        return [
+            EntityTypeInfo(type=t, aliases=sorted(inverted.get(t, [])))
+            for t in payload.get("entity_types", [])
+        ]
+
+    async def list_annotators(self) -> list[AnnotatorInfo]:
+        """Return the annotators available to the mapping pipeline.
+
+        Raises:
+            BioMapperAuthError: If the key is rejected.
+            BioMapperServerError: For unrecoverable 5xx errors.
+            BioMapperTimeoutError: If the request times out.
+        """
+        try:
+            response = await self._http.get(f"{self._base_url}/annotators")
+        except httpx.TimeoutException as exc:
+            raise BioMapperTimeoutError("list_annotators timed out") from exc
+        self._raise_for_status(response)
+        payload = response.json()
+        return [AnnotatorInfo.model_validate(a) for a in payload.get("annotators", [])]
+
+    async def list_vocabularies(self) -> list[VocabularyInfo]:
+        """Return the identifier vocabularies supported by the API.
+
+        Raises:
+            BioMapperAuthError: If the key is rejected.
+            BioMapperServerError: For unrecoverable 5xx errors.
+            BioMapperTimeoutError: If the request times out.
+        """
+        try:
+            response = await self._http.get(f"{self._base_url}/vocabularies")
+        except httpx.TimeoutException as exc:
+            raise BioMapperTimeoutError("list_vocabularies timed out") from exc
+        self._raise_for_status(response)
+        payload = response.json()
+        return [VocabularyInfo.model_validate(v) for v in payload.get("vocabularies", [])]
 
     async def health_check(self) -> dict[str, Any]:
         """Verify connectivity and API readiness.
