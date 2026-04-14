@@ -29,10 +29,23 @@ from ddharmon.exceptions import (
     BioMapperServerError,
     BioMapperTimeoutError,
 )
-from ddharmon.mapper import map_entities, map_entity, summarize
-from ddharmon.models import MappingResult, MappingSummary
+from ddharmon.mapper import (
+    list_annotators,
+    list_entity_types,
+    list_vocabularies,
+    map_entities,
+    map_entity,
+    summarize,
+)
+from ddharmon.models import (
+    AnnotatorInfo,
+    EntityTypeInfo,
+    MappingResult,
+    MappingSummary,
+    VocabularyInfo,
+)
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Client
@@ -40,10 +53,16 @@ __all__ = [
     # Sync helpers
     "map_entity",
     "map_entities",
+    "list_entity_types",
+    "list_annotators",
+    "list_vocabularies",
     "summarize",
     # Models
     "MappingResult",
     "MappingSummary",
+    "EntityTypeInfo",
+    "AnnotatorInfo",
+    "VocabularyInfo",
     # Exceptions
     "BioMapperError",
     "BioMapperAuthError",

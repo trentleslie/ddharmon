@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import warnings
+from collections import defaultdict
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
@@ -15,11 +18,19 @@ from ddharmon.exceptions import (
     BioMapperServerError,
     BioMapperTimeoutError,
 )
-from ddharmon.models import MapEntityRequest, MappingResult
+from ddharmon.models import (
+    AnnotatorInfo,
+    BatchMappingResponse,
+    EntityTypeInfo,
+    MapEntityRequest,
+    MappingResult,
+    VocabularyInfo,
+)
 
 DEFAULT_BASE_URL = "https://biomapper.expertintheloop.io/api/v1"
 DEFAULT_TIMEOUT = 30.0
-DEFAULT_RATE_LIMIT_DELAY = 0.3  # seconds between calls in batch mode
+DEFAULT_RATE_LIMIT_DELAY = 0.0  # seconds between chunks; deprecated in 0.3.0
+DEFAULT_MAX_BATCH_SIZE = 1000  # /map/batch API limit (OpenAPI maxItems)
 
 
 class BioMapperClient:
@@ -125,6 +136,70 @@ class BioMapperClient:
     # Public API
     # ------------------------------------------------------------------
 
+    async def list_entity_types(self) -> list[EntityTypeInfo]:
+        """Return the Biolink entity types supported by the API.
+
+        The server returns a flat ``{alias: type}`` lookup; this method
+        inverts it into per-type :class:`EntityTypeInfo` objects with
+        sorted alias lists — the shape users actually want when enumerating.
+
+        Returns:
+            List of :class:`EntityTypeInfo` in the order the server returned
+            ``entity_types``; each ``aliases`` list is sorted alphabetically.
+
+        Raises:
+            BioMapperAuthError: If the key is rejected.
+            BioMapperServerError: For unrecoverable 5xx errors.
+            BioMapperTimeoutError: If the request times out.
+        """
+        try:
+            response = await self._http.get(f"{self._base_url}/entity-types")
+        except httpx.TimeoutException as exc:
+            raise BioMapperTimeoutError("list_entity_types timed out") from exc
+        self._raise_for_status(response)
+        payload = response.json()
+
+        inverted: dict[str, list[str]] = defaultdict(list)
+        for alias, type_name in payload.get("aliases", {}).items():
+            inverted[type_name].append(alias)
+
+        return [
+            EntityTypeInfo(type=t, aliases=sorted(inverted.get(t, [])))
+            for t in payload.get("entity_types", [])
+        ]
+
+    async def list_annotators(self) -> list[AnnotatorInfo]:
+        """Return the annotators available to the mapping pipeline.
+
+        Raises:
+            BioMapperAuthError: If the key is rejected.
+            BioMapperServerError: For unrecoverable 5xx errors.
+            BioMapperTimeoutError: If the request times out.
+        """
+        try:
+            response = await self._http.get(f"{self._base_url}/annotators")
+        except httpx.TimeoutException as exc:
+            raise BioMapperTimeoutError("list_annotators timed out") from exc
+        self._raise_for_status(response)
+        payload = response.json()
+        return [AnnotatorInfo.model_validate(a) for a in payload.get("annotators", [])]
+
+    async def list_vocabularies(self) -> list[VocabularyInfo]:
+        """Return the identifier vocabularies supported by the API.
+
+        Raises:
+            BioMapperAuthError: If the key is rejected.
+            BioMapperServerError: For unrecoverable 5xx errors.
+            BioMapperTimeoutError: If the request times out.
+        """
+        try:
+            response = await self._http.get(f"{self._base_url}/vocabularies")
+        except httpx.TimeoutException as exc:
+            raise BioMapperTimeoutError("list_vocabularies timed out") from exc
+        self._raise_for_status(response)
+        payload = response.json()
+        return [VocabularyInfo.model_validate(v) for v in payload.get("vocabularies", [])]
+
     async def health_check(self) -> dict[str, Any]:
         """Verify connectivity and API readiness.
 
@@ -200,30 +275,44 @@ class BioMapperClient:
 
     async def map_entities(
         self,
-        records: list[dict[str, Any]],
+        records: Iterable[dict[str, Any]],
         rate_limit_delay: float = DEFAULT_RATE_LIMIT_DELAY,
         entity_type: str = "biolink:SmallMolecule",
         annotation_mode: str = "missing",
         annotators: list[str] | None = None,
         progress: bool = False,
     ) -> list[MappingResult]:
-        """Map a batch of entity records with rate limiting.
+        """Map a batch of entity records via the native ``/map/batch`` endpoint.
 
         Each record is a dict with at least a ``"name"`` key, and optionally
-        ``"identifiers"`` (``{"HMDB": "HMDB00177"}``).
+        ``"identifiers"`` (``{"HMDB": "HMDB00177"}``). Inputs are auto-chunked
+        at ``DEFAULT_MAX_BATCH_SIZE`` entities per request (API limit).
 
         Args:
-            records:           List of ``{"name": str, "identifiers": dict}`` dicts.
-            rate_limit_delay:  Seconds to sleep between API calls.  Default 0.3.
-            entity_type:       Biolink entity type for all records.
-            annotation_mode:   Annotation mode for all records.
+            records:           Iterable of ``{"name": str, "identifiers": dict}`` dicts.
+                               Materialized into a list at entry so generators are
+                               accepted.
+            rate_limit_delay:  Seconds to sleep **between chunks** (not between
+                               individual records). Default ``0.0``. Passing a
+                               non-zero value emits a ``DeprecationWarning``;
+                               the parameter will be removed in ddharmon 1.0.0.
+            entity_type:       Biolink entity type applied to every record.
+            annotation_mode:   Annotation mode applied to every record.
             annotators:        Optional list of annotator names to use.
             progress:          Show a tqdm progress bar (requires ``ddharmon[notebook]``).
+                               The bar totals ``len(records)`` and advances by the
+                               chunk size after each chunk completes.
 
         Returns:
             List of :class:`~ddharmon.models.MappingResult`, one per input record,
-            in the same order.  Failed records return a result with ``error`` set
-            rather than raising.
+            in input order. Records that fail (either per-record errors in a
+            successful response or every record in a chunk-level HTTP failure)
+            return a result with ``error`` set rather than raising.
+
+        Raises:
+            asyncio.CancelledError: Propagated immediately so callers can cancel
+                mid-batch. All other exceptions are caught and surfaced as
+                per-record errors.
 
         Example::
 
@@ -236,40 +325,111 @@ class BioMapperClient:
                     progress=True,
                 )
         """
-        iter_records: Any = records
+        records = list(records)  # materialize so generators work and len() is safe
 
+        if rate_limit_delay > 0:
+            # stacklevel=3 attributes the warning to user code when called through
+            # the sync wrapper (mapper.map_entities → asyncio.run(_run) → here).
+            # For direct async callers this points one frame past their call site,
+            # which is still a useful approximate location.
+            warnings.warn(
+                "rate_limit_delay now applies between chunks rather than between "
+                "records; this parameter will be removed in ddharmon 1.0.0",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+
+        requests = [
+            MapEntityRequest(
+                name=str(r.get("name", "")),
+                entity_type=entity_type,
+                identifiers=dict(r.get("identifiers") or {}),
+                options=self._build_options(annotation_mode, annotators),
+            )
+            for r in records
+        ]
+
+        chunks = [
+            requests[i : i + DEFAULT_MAX_BATCH_SIZE]
+            for i in range(0, len(requests), DEFAULT_MAX_BATCH_SIZE)
+        ]
+
+        pbar: Any = None
         if progress:
             try:
                 from tqdm.auto import tqdm
 
-                iter_records = tqdm(records, desc="Mapping entities")
+                pbar = tqdm(total=len(records), desc="Mapping entities")
             except ImportError:
                 pass  # silently degrade if tqdm not installed
 
         results: list[MappingResult] = []
 
-        for i, record in enumerate(iter_records):
-            if i > 0:
-                await asyncio.sleep(rate_limit_delay)
+        try:
+            for idx, chunk in enumerate(chunks):
+                if idx > 0 and rate_limit_delay > 0:
+                    await asyncio.sleep(rate_limit_delay)
 
-            name: str = str(record.get("name", ""))
-            identifiers: dict[str, str] = dict(record.get("identifiers") or {})
-
-            try:
-                result = await self.map_entity(
-                    name=name,
-                    entity_type=entity_type,
-                    identifiers=identifiers or None,
-                    annotation_mode=annotation_mode,
-                    annotators=annotators,
-                )
-            except Exception as exc:  # noqa: BLE001
-                result = MappingResult(
-                    query_name=name,
-                    hmdb_hint=identifiers.get("HMDB"),
-                    error=str(exc),
-                )
-
-            results.append(result)
+                try:
+                    response = await self._http.post(
+                        f"{self._base_url}/map/batch",
+                        json={
+                            "entities": [
+                                r.model_dump(exclude_none=False) for r in chunk
+                            ]
+                        },
+                    )
+                    self._raise_for_status(response)
+                    parsed = BatchMappingResponse.model_validate(response.json())
+                    # strict=True: a length mismatch between sent entities and
+                    # returned results raises ValueError, which the chunk-level
+                    # except below converts into per-record errors — preserving the
+                    # invariant that len(results) == len(records) end-to-end.
+                    for req, raw in zip(chunk, parsed.results, strict=True):
+                        if raw.name and raw.name != req.name:
+                            warnings.warn(
+                                f"Batch order mismatch: sent {req.name!r}, "
+                                f"got {raw.name!r}",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
+                        results.append(
+                            MappingResult.from_batch_entry(
+                                raw,
+                                query_name=req.name,
+                                hmdb_hint=req.identifiers.get("HMDB"),
+                            )
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — broad catch preserves "one bad chunk doesn't abort the batch"
+                    for req in chunk:
+                        results.append(
+                            MappingResult(
+                                query_name=req.name,
+                                hmdb_hint=req.identifiers.get("HMDB"),
+                                error=str(exc),
+                            )
+                        )
+                    if isinstance(exc, BioMapperRateLimitError) and exc.retry_after:
+                        # Courtesy: honor server's Retry-After between chunks.
+                        await asyncio.sleep(max(exc.retry_after, rate_limit_delay))
+                finally:
+                    if pbar is not None:
+                        pbar.update(len(chunk))
+        finally:
+            # Outer finally ensures pbar.close() runs even if CancelledError
+            # bubbles out of the loop (Jupyter widget cleanup).
+            if pbar is not None:
+                pbar.close()
 
         return results
+
+    @staticmethod
+    def _build_options(
+        annotation_mode: str, annotators: list[str] | None
+    ) -> dict[str, Any]:
+        options: dict[str, Any] = {"annotation_mode": annotation_mode}
+        if annotators is not None:
+            options["annotators"] = annotators
+        return options
