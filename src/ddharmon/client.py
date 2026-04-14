@@ -7,7 +7,7 @@ import contextlib
 import os
 import warnings
 from collections import defaultdict
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -448,7 +448,7 @@ class BioMapperClient:
         annotation_mode: str = "missing",
         annotators: list[str] | None = None,
         vocab: str | None = None,
-    ) -> AsyncIterator[MappingResult]:
+    ) -> AsyncGenerator[MappingResult, None]:
         """Stream per-row mapping results from ``POST /map/dataset/stream``.
 
         Uploads ``path`` as a multipart body and yields :class:`MappingResult`
