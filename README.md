@@ -79,6 +79,26 @@ print(f"Resolution rate: {summary.resolution_rate:.1%}")
 print(summary.vocabulary_coverage)
 ```
 
+Inputs are auto-chunked at 1000 entities per request against the native
+`POST /map/batch` endpoint, so 10,000 records cost 10 round-trips.
+
+### Discovering what the API supports
+
+```python
+from ddharmon import list_annotators, list_vocabularies, list_entity_types
+
+for a in list_annotators():
+    print(f"{a.slug:30s} {a.name}")
+
+# 300+ supported vocabularies (CHEBI, HMDB, PubChem, …)
+vocabs = list_vocabularies()
+print(f"{len(vocabs)} vocabularies supported")
+
+# Biolink entity types with their known aliases
+for et in list_entity_types():
+    print(f"{et.type}: {', '.join(et.aliases)}")
+```
+
 ### Async usage
 
 ```python
@@ -97,10 +117,9 @@ async def main() -> None:
             identifiers={"HMDB": "HMDB00177"},
         )
 
-        # Batch with rate limiting
+        # Batch — auto-chunked at 1000 entities per request
         results = await client.map_entities(
             [{"name": "L-Histidine"}, {"name": "Glucose"}],
-            rate_limit_delay=0.3,
             progress=True,
         )
 
