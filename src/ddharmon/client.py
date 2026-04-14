@@ -20,10 +20,10 @@ from ddharmon.exceptions import (
 )
 from ddharmon.models import (
     AnnotatorInfo,
+    BatchMappingResponse,
     EntityTypeInfo,
     MapEntityRequest,
     MappingResult,
-    RawApiResult,
     VocabularyInfo,
 )
 
@@ -328,11 +328,15 @@ class BioMapperClient:
         records = list(records)  # materialize so generators work and len() is safe
 
         if rate_limit_delay > 0:
+            # stacklevel=3 attributes the warning to user code when called through
+            # the sync wrapper (mapper.map_entities → asyncio.run(_run) → here).
+            # For direct async callers this points one frame past their call site,
+            # which is still a useful approximate location.
             warnings.warn(
                 "rate_limit_delay now applies between chunks rather than between "
                 "records; this parameter will be removed in ddharmon 1.0.0",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
 
         requests = [
@@ -361,60 +365,63 @@ class BioMapperClient:
 
         results: list[MappingResult] = []
 
-        for idx, chunk in enumerate(chunks):
-            if idx > 0 and rate_limit_delay > 0:
-                await asyncio.sleep(rate_limit_delay)
+        try:
+            for idx, chunk in enumerate(chunks):
+                if idx > 0 and rate_limit_delay > 0:
+                    await asyncio.sleep(rate_limit_delay)
 
-            try:
-                response = await self._http.post(
-                    f"{self._base_url}/map/batch",
-                    json={
-                        "entities": [
-                            r.model_dump(exclude_none=False) for r in chunk
-                        ]
-                    },
-                )
-                self._raise_for_status(response)
-                payload = response.json()
-                # strict=True: a length mismatch between sent entities and returned
-                # results raises ValueError, which the chunk-level except below
-                # converts into per-record errors — preserving the invariant that
-                # len(results) == len(records) end-to-end.
-                for req, raw_dict in zip(chunk, payload["results"], strict=True):
-                    raw = RawApiResult.model_validate(raw_dict)
-                    if raw.name and raw.name != req.name:
-                        warnings.warn(
-                            f"Batch order mismatch: sent {req.name!r}, got {raw.name!r}",
-                            RuntimeWarning,
-                            stacklevel=2,
-                        )
-                    results.append(
-                        MappingResult.from_batch_entry(
-                            raw,
-                            query_name=req.name,
-                            hmdb_hint=req.identifiers.get("HMDB"),
-                        )
+                try:
+                    response = await self._http.post(
+                        f"{self._base_url}/map/batch",
+                        json={
+                            "entities": [
+                                r.model_dump(exclude_none=False) for r in chunk
+                            ]
+                        },
                     )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — broad catch preserves "one bad chunk doesn't abort the batch"
-                for req in chunk:
-                    results.append(
-                        MappingResult(
-                            query_name=req.name,
-                            hmdb_hint=req.identifiers.get("HMDB"),
-                            error=str(exc),
+                    self._raise_for_status(response)
+                    parsed = BatchMappingResponse.model_validate(response.json())
+                    # strict=True: a length mismatch between sent entities and
+                    # returned results raises ValueError, which the chunk-level
+                    # except below converts into per-record errors — preserving the
+                    # invariant that len(results) == len(records) end-to-end.
+                    for req, raw in zip(chunk, parsed.results, strict=True):
+                        if raw.name and raw.name != req.name:
+                            warnings.warn(
+                                f"Batch order mismatch: sent {req.name!r}, "
+                                f"got {raw.name!r}",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
+                        results.append(
+                            MappingResult.from_batch_entry(
+                                raw,
+                                query_name=req.name,
+                                hmdb_hint=req.identifiers.get("HMDB"),
+                            )
                         )
-                    )
-                if isinstance(exc, BioMapperRateLimitError) and exc.retry_after:
-                    # Courtesy: honor server's Retry-After between chunks.
-                    await asyncio.sleep(max(exc.retry_after, rate_limit_delay))
-            finally:
-                if pbar is not None:
-                    pbar.update(len(chunk))
-
-        if pbar is not None:
-            pbar.close()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — broad catch preserves "one bad chunk doesn't abort the batch"
+                    for req in chunk:
+                        results.append(
+                            MappingResult(
+                                query_name=req.name,
+                                hmdb_hint=req.identifiers.get("HMDB"),
+                                error=str(exc),
+                            )
+                        )
+                    if isinstance(exc, BioMapperRateLimitError) and exc.retry_after:
+                        # Courtesy: honor server's Retry-After between chunks.
+                        await asyncio.sleep(max(exc.retry_after, rate_limit_delay))
+                finally:
+                    if pbar is not None:
+                        pbar.update(len(chunk))
+        finally:
+            # Outer finally ensures pbar.close() runs even if CancelledError
+            # bubbles out of the loop (Jupyter widget cleanup).
+            if pbar is not None:
+                pbar.close()
 
         return results
 
