@@ -188,28 +188,29 @@ def map_dataset_file_sync(
                 # outside the try) cannot be accidentally captured into
                 # `.error`. See module docstring + plan.
                 while True:
-                        try:
-                            r = await gen.__anext__()
-                        except StopAsyncIteration:
-                            break
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as exc:  # noqa: BLE001 — transport-layer bubble
-                            if not streaming_started:
-                                # Initial-request error — propagate unwrapped.
-                                raise
-                            error = str(exc)
-                            break
-                        # Success branch: record the result, tick progress,
-                        # then invoke the user callback. Any exception the
-                        # callback raises propagates out of the while loop
-                        # (and out of _run) to the caller — NOT captured.
-                        results.append(r)
-                        streaming_started = True
-                        if pbar is not None:
-                            pbar.update(1)
-                        if on_result is not None:
-                            on_result(r)
+            while True:
+                try:
+                    r = await gen.__anext__()
+                except StopAsyncIteration:
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — transport-layer bubble
+                    if not streaming_started:
+                        # Initial-request error — propagate unwrapped.
+                        raise
+                    error = str(exc)
+                    break
+                # Success branch: record the result, tick progress,
+                # then invoke the user callback. Any exception the
+                # callback raises propagates out of the while loop
+                # (and out of _run) to the caller — NOT captured.
+                results.append(r)
+                streaming_started = True
+                if pbar is not None:
+                    pbar.update(1)
+                if on_result is not None:
+                    on_result(r)
         finally:
             if pbar is not None:
                 pbar.close()
