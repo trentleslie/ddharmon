@@ -150,8 +150,21 @@ async def main() -> None:
             progress=True,
         )
 
+        # Stream from a file — per-result as they arrive
+        from pathlib import Path
+        async for r in client.map_dataset_file_iter(
+            Path("compounds.tsv"),
+            name_column="name",
+            provided_id_columns=["hmdb_id"],
+        ):
+            print(r.query_name, r.primary_curie)
+
 asyncio.run(main())
 ```
+
+`map_dataset_file_iter` is the primitive for UIs and custom processing that
+want per-result reactivity. Callers needing a blocking, fully-collected
+result should use `map_dataset_file_sync` instead (see above).
 
 ### Jupyter notebooks
 
@@ -205,6 +218,32 @@ result.ids_for("refmet_id")    # ['RM0129894']
 result.ids_for("PUBCHEM.COMPOUND")  # []
 ```
 
+### `DatasetMappingResult`
+
+Return type of `map_dataset_file_sync`. Captures per-row results plus an
+opt-in error signal for partial runs.
+
+| Attribute | Type | Description |
+|---|---|---|
+| `results` | `list[MappingResult]` | Per-row mapping outcomes in server-emitted order |
+| `stats` | `dict[str, Any]` | Server-provided summary. Empty unless the stream emits a terminal summary line |
+| `metadata` | `ApiMetadata` | Request metadata; stays at defaults when the stream truncates before completion |
+| `error` | `str \| None` | Mid-stream transport failure text. `None` on clean runs |
+
+```python
+result.raise_for_error()   # raises BioMapperError if .error is set; else no-op
+```
+
+`raise_for_error` mirrors `httpx.Response.raise_for_status` and turns the
+partial-result contract into an explicit caller opt-in — silent consumption
+of a truncated run (using `.results` without checking `.error`) is the
+footgun this model is designed to prevent.
+
+> **Note:** `confidence_score` on dataset-stream results is always `None` —
+> the `/map/dataset/stream` endpoint emits a slimmer per-row payload than
+> `/map/batch` and does not include the annotator `assigned_ids` block.
+> Use `map_entity` / `map_entities` if you need confidence tiers.
+
 ### Confidence tiers
 
 | Score | Tier | Recommended action |
@@ -236,6 +275,21 @@ except BioMapperAuthError:
 
 In batch mode (`map_entities`), per-record errors are caught and returned as
 `MappingResult(error=...)` rather than aborting the batch.
+
+Dataset streaming (`map_dataset_file_sync`) uses a two-tier contract:
+
+- **Initial-request errors** (401, 422, 500, connect timeout) raise as typed
+  exceptions — these happen before any row is processed, so partial results
+  don't exist to preserve.
+- **Mid-stream transport failures** are captured into
+  `DatasetMappingResult.error` with the partial results preserved in
+  `.results`. Call `.raise_for_error()` to get exception semantics, or
+  inspect `.error` directly for "accept partial, log the rest" workflows.
+
+Callback exceptions raised from `on_result` propagate unwrapped and
+**replace the return value** — partial results collected up to that point
+are lost. For UI consumers with failure-prone callbacks, wrap the callback
+body in your own try/except if you want partial data to survive.
 
 ---
 
