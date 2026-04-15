@@ -69,7 +69,7 @@ class BioMapperClient:
         api_key: str | None = None,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
-        **httpx_kwargs: Any,
+        **httpx_kwargs: Any,  # noqa: ANN401 — forwarded to httpx.AsyncClient verbatim
     ) -> None:
         resolved_key = api_key or os.getenv("BIOMAPPER_API_KEY")
         if not resolved_key:
@@ -94,7 +94,7 @@ class BioMapperClient:
         )
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, *args: Any) -> None:  # noqa: ANN401 — dunder (exc_type, exc, tb) tuple
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -122,10 +122,8 @@ class BioMapperClient:
         if code == 429:
             retry_after: float | None = None
             if ra := response.headers.get("Retry-After"):
-                try:
+                with contextlib.suppress(ValueError):
                     retry_after = float(ra)
-                except ValueError:
-                    pass
             raise BioMapperRateLimitError(
                 "Rate limit exceeded (HTTP 429).", retry_after=retry_after
             )
