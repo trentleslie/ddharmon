@@ -82,6 +82,33 @@ print(summary.vocabulary_coverage)
 Inputs are auto-chunked at 1000 entities per request against the native
 `POST /map/batch` endpoint, so 10,000 records cost 10 round-trips.
 
+### Dataset upload (synchronous)
+
+For larger inputs, hand the server a TSV/CSV file directly and stream
+results back. The server processes the file row-by-row over the
+`POST /map/dataset/stream` endpoint:
+
+```python
+from pathlib import Path
+from ddharmon import map_dataset_file_sync
+
+result = map_dataset_file_sync(
+    Path("compounds.tsv"),
+    name_column="name",
+    provided_id_columns=["hmdb_id"],
+    progress=True,         # tqdm bar
+    total_hint=1000,       # optional; enables % progress
+)
+result.raise_for_error()   # opt-in: raise BioMapperError if the stream truncated
+print(f"resolved {sum(1 for r in result.results if r.resolved)} of {len(result.results)}")
+```
+
+`name_column` and `provided_id_columns` are required — the server uses
+them to map your file's columns to entity names and identifier hints.
+For per-result streaming into a UI or custom processing, use the async
+`BioMapperClient.map_dataset_file_iter` method (see the tutorial
+notebook in `notebooks/`).
+
 ### Discovering what the API supports
 
 ```python

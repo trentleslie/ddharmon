@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from ddharmon.exceptions import BioMapperError
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -323,3 +325,79 @@ class MappingSummary(BaseModel):
             resolution_rate=resolved / total if total > 0 else 0.0,
             vocabulary_coverage=vocab_coverage,
         )
+
+
+# ---------------------------------------------------------------------------
+# Dataset mapping result (for map_dataset_file_sync / map_dataset_file_iter)
+# ---------------------------------------------------------------------------
+
+
+class DatasetMappingResult(BaseModel):
+    """Aggregated outcome of a dataset-file mapping run.
+
+    Returned by :func:`ddharmon.map_dataset_file_sync` and hand-assembled by
+    callers of :meth:`ddharmon.BioMapperClient.map_dataset_file_iter` that
+    want a single return object. Captures the full result list, any summary
+    statistics the server emitted, request metadata, and — if the stream was
+    truncated by a transport-level failure — the error text so callers can
+    distinguish clean runs from partial runs.
+
+    The ``stats`` field is populated **only** if the NDJSON stream emits a
+    terminal summary line. If the server contract omits summary lines,
+    ``stats`` stays ``{}`` — this is expected, not a failure signal.
+
+    ``metadata`` remains the default :class:`ApiMetadata` on mid-stream
+    failures because no completion envelope ever arrived. Callers correlating
+    partial results with server logs rely on other channels (e.g. enabling
+    httpx request logging).
+
+    Attributes:
+        results:  Per-record mapping outcomes in the order the server emitted
+                  them. May be empty (zero results, or initial-request error).
+        stats:    Server-provided summary statistics, if any. Otherwise ``{}``.
+        metadata: Server-provided request metadata. Empty defaults if the run
+                  was truncated before the server emitted completion data.
+        error:    Populated on mid-stream transport failure; holds the
+                  exception's ``str(exc)``. ``None`` on clean runs. Partial
+                  ``results`` are retained alongside the error.
+
+    Usage:
+        Two patterns, mirroring :meth:`httpx.Response.raise_for_status`:
+
+        Exception semantics (notebooks, scripts)::
+
+            result = map_dataset_file_sync(path, ...)
+            result.raise_for_error()
+            summary = summarize(result.results)
+
+        Partial-results semantics (UIs, resumable workflows)::
+
+            result = map_dataset_file_sync(path, ...)
+            if result.error:
+                log_and_render_partial(result.results, result.error)
+            else:
+                render_complete(result.results)
+    """
+
+    results: list[MappingResult] = Field(default_factory=list)
+    stats: dict[str, Any] = Field(default_factory=dict)
+    metadata: ApiMetadata = Field(default_factory=ApiMetadata)
+    error: str | None = None
+
+    def raise_for_error(self) -> None:
+        """Raise :class:`BioMapperError` if :attr:`error` is set; otherwise do nothing.
+
+        Mirrors :meth:`httpx.Response.raise_for_status`. The stored error text
+        becomes the exception message, so the caller sees a typed exception
+        carrying the original failure reason. Partial ``results`` are **not**
+        cleared — they are still accessible on the instance after catching the
+        exception::
+
+            try:
+                result.raise_for_error()
+            except BioMapperError:
+                salvage_partial(result.results)  # result.results still intact
+                raise
+        """
+        if self.error is not None:
+            raise BioMapperError(self.error)

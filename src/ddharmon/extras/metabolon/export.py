@@ -52,7 +52,7 @@ def flatten_results(results: list[MappingResult]) -> list[dict[str, Any]]:
     return flat
 
 
-def results_to_dataframe(results: list[MappingResult]) -> Any:
+def results_to_dataframe(results: list[MappingResult]) -> Any:  # noqa: ANN401 — pandas is an optional extra; return type is pandas.DataFrame when installed
     """Return a pandas DataFrame of flattened mapping results.
 
     Requires ``ddharmon[metabolon]`` (pandas).

@@ -54,7 +54,7 @@ class TestExtractHmdbId:
 
 class TestBuildMappingQueue:
     @pytest.fixture()
-    def sample_df(self) -> "object":
+    def sample_df(self) -> object:
         pytest.importorskip("pandas")
         import pandas as pd
 
@@ -77,41 +77,41 @@ class TestBuildMappingQueue:
             }
         )
 
-    def test_deduplicates_by_cleaned_name(self, sample_df: "object") -> None:
+    def test_deduplicates_by_cleaned_name(self, sample_df: object) -> None:
         queue = build_mapping_queue(sample_df)
         names = [r.name for r in queue]
         assert len(names) == 2  # L-Histidine + Glucose, None skipped
         assert "L-Histidine" in names
         assert "Glucose" in names
 
-    def test_preserves_hmdb_hint(self, sample_df: "object") -> None:
+    def test_preserves_hmdb_hint(self, sample_df: object) -> None:
         queue = build_mapping_queue(sample_df)
         histidine = next(r for r in queue if r.name == "L-Histidine")
         assert histidine.hmdb_hint == "HMDB00177"
 
-    def test_collects_all_feature_ids(self, sample_df: "object") -> None:
+    def test_collects_all_feature_ids(self, sample_df: object) -> None:
         queue = build_mapping_queue(sample_df)
         histidine = next(r for r in queue if r.name == "L-Histidine")
         assert set(histidine.feature_ids) == {"f1", "f2"}
 
-    def test_highest_priority_match_level(self, sample_df: "object") -> None:
+    def test_highest_priority_match_level(self, sample_df: object) -> None:
         queue = build_mapping_queue(sample_df)
         histidine = next(r for r in queue if r.name == "L-Histidine")
         # f1 is MS2 (priority 3), f2 is MS1 (priority 2) → should keep MS2
         assert histidine.match_level == "MS2"
 
-    def test_limit_parameter(self, sample_df: "object") -> None:
+    def test_limit_parameter(self, sample_df: object) -> None:
         queue = build_mapping_queue(sample_df, limit=1)
         assert len(queue) == 1
 
-    def test_as_api_record_with_hint(self, sample_df: "object") -> None:
+    def test_as_api_record_with_hint(self, sample_df: object) -> None:
         queue = build_mapping_queue(sample_df)
         histidine = next(r for r in queue if r.name == "L-Histidine")
         api_rec = histidine.as_api_record()
         assert api_rec["name"] == "L-Histidine"
         assert api_rec["identifiers"] == {"HMDB": "HMDB00177"}
 
-    def test_as_api_record_without_hint(self, sample_df: "object") -> None:
+    def test_as_api_record_without_hint(self, sample_df: object) -> None:
         queue = build_mapping_queue(sample_df)
         glucose = next(r for r in queue if r.name == "Glucose")
         api_rec = glucose.as_api_record()

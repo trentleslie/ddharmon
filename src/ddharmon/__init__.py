@@ -15,12 +15,26 @@ Quick start::
         progress=True,
     )
 
+    # File-based (synchronous, with progress bar)
+    from pathlib import Path
+    from ddharmon import map_dataset_file_sync
+
+    result = map_dataset_file_sync(
+        Path("compounds.tsv"),
+        name_column="name",
+        provided_id_columns=["hmdb_id"],
+        progress=True,
+    )
+    result.raise_for_error()  # opt-in: raise if the stream truncated
+    print(f"resolved {sum(1 for r in result.results if r.resolved)}")
+
     # Async (in an async context)
     async with BioMapperClient() as client:
         result = await client.map_entity("L-Histidine")
 """
 
 from ddharmon.client import BioMapperClient
+from ddharmon.dataset import map_dataset_file_sync
 from ddharmon.exceptions import (
     BioMapperAuthError,
     BioMapperConfigError,
@@ -39,13 +53,14 @@ from ddharmon.mapper import (
 )
 from ddharmon.models import (
     AnnotatorInfo,
+    DatasetMappingResult,
     EntityTypeInfo,
     MappingResult,
     MappingSummary,
     VocabularyInfo,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Client
@@ -53,6 +68,7 @@ __all__ = [
     # Sync helpers
     "map_entity",
     "map_entities",
+    "map_dataset_file_sync",
     "list_entity_types",
     "list_annotators",
     "list_vocabularies",
@@ -60,6 +76,7 @@ __all__ = [
     # Models
     "MappingResult",
     "MappingSummary",
+    "DatasetMappingResult",
     "EntityTypeInfo",
     "AnnotatorInfo",
     "VocabularyInfo",

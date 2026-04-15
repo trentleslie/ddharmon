@@ -6,9 +6,12 @@ from typing import Any
 
 import pytest
 
+from ddharmon.exceptions import BioMapperError
 from ddharmon.models import (
     AnnotatorInfo,
+    ApiMetadata,
     BatchMappingResponse,
+    DatasetMappingResult,
     EntityTypeInfo,
     MappingResult,
     MappingSummary,
@@ -219,3 +222,58 @@ class TestMappingResultFromBatchEntry:
             raw, query_name="L-Histidine", hmdb_hint="HMDB00177"
         )
         assert result.hmdb_hint == "HMDB00177"
+
+
+class TestDatasetMappingResult:
+    def test_defaults(self) -> None:
+        result = DatasetMappingResult()
+        assert result.results == []
+        assert result.stats == {}
+        assert result.metadata.request_id == ""
+        assert result.metadata.processing_time_ms == 0.0
+        assert result.error is None
+
+    def test_round_trip(self) -> None:
+        result = DatasetMappingResult(
+            results=[
+                MappingResult(
+                    query_name="x",
+                    resolved=True,
+                    primary_curie="CHEBI:1",
+                )
+            ],
+            stats={"total": 1},
+            metadata=ApiMetadata(request_id="r1", processing_time_ms=5.0),
+        )
+        dumped = result.model_dump()
+        restored = DatasetMappingResult.model_validate(dumped)
+        assert restored.results[0].query_name == "x"
+        assert restored.stats == {"total": 1}
+        assert restored.metadata.request_id == "r1"
+        assert restored.error is None
+
+    def test_partial_failure_shape(self) -> None:
+        result = DatasetMappingResult(error="stream broke")
+        assert result.error == "stream broke"
+        assert result.results == []
+
+    def test_raise_for_error_no_error_returns_none(self) -> None:
+        # Clean run: no exception, no return value.
+        assert DatasetMappingResult().raise_for_error() is None
+
+    def test_raise_for_error_raises_with_message(self) -> None:
+        result = DatasetMappingResult(error="stream broke")
+        with pytest.raises(BioMapperError) as exc_info:
+            result.raise_for_error()
+        assert str(exc_info.value) == "stream broke"
+
+    def test_raise_for_error_with_partial_results(self) -> None:
+        # Partial results must not suppress the error; they also remain
+        # accessible on the instance after the raise.
+        partial = DatasetMappingResult(
+            results=[MappingResult(query_name="x", resolved=True)],
+            error="timeout",
+        )
+        with pytest.raises(BioMapperError):
+            partial.raise_for_error()
+        assert len(partial.results) == 1
