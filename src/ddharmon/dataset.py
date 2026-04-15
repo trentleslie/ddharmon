@@ -188,6 +188,7 @@ def map_dataset_file_sync(
             # outside the try) cannot be accidentally captured into
             # `.error`. See module docstring + plan.
             while True:
+                # Only wrap generator consumption; do NOT capture callback errors
                 try:
                     r = await gen.__anext__()
                 except StopAsyncIteration:
