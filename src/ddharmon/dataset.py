@@ -183,11 +183,10 @@ def map_dataset_file_sync(
                     )
                 ) as gen,
             ):
-                # Manual driving of the iterator lets us wrap ONLY `__anext__`
-                # in the try/except, so on_result exceptions (raised later,
-                # outside the try) cannot be accidentally captured into
-                # `.error`. See module docstring + plan.
-                while True:
+            # Manual driving of the iterator lets us wrap ONLY `__anext__`
+            # in the try/except, so on_result exceptions (raised later,
+            # outside the try) cannot be accidentally captured into
+            # `.error`. See module docstring + plan.
             while True:
                 try:
                     r = await gen.__anext__()
