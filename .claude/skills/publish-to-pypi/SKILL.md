@@ -53,18 +53,30 @@ Run from a clean checkout of `Phenome-Health/ddharmon` (canonical + publisher).
    gh release create vX.Y.Z --repo Phenome-Health/ddharmon --title "vX.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/## \[/p' CHANGELOG.md)
    ```
    (or use the GitHub web UI). Watch the run: `gh run watch --repo Phenome-Health/ddharmon`.
-6. **Verify** at https://pypi.org/project/ddharmon/ that `X.Y.Z` is the new latest, then in a
-   fresh virtualenv:
+6. **Verify the published release** with the automated gate:
    ```bash
-   pip install "ddharmon==X.Y.Z"
-   python -c "import ddharmon; print('ok')"
-   ddharmon --help
+   python scripts/verify_release.py X.Y.Z          # core (fast, every release)
+   python scripts/verify_release.py X.Y.Z --full    # also runs the [all] embedding stack (slow)
    ```
+   This runs three stages and exits non-zero if any fail:
+   1. **PyPI is live** — polls `https://pypi.org/pypi/ddharmon/X.Y.Z/json` with retry/backoff,
+      tolerating index/CDN propagation lag (default ~5 min, tunable via `--timeout`).
+   2. **Installs from PyPI into a throwaway venv** — `pip install`s the *exact* pinned version
+      (`ddharmon==X.Y.Z`), so a stale CDN copy can't masquerade as the new release.
+   3. **Smoke test inside that venv** — `scripts/smoke_test.py` runs against the installed wheel:
+      asserts the installed distribution version equals `X.Y.Z`, then exercises value-encoding
+      parsing, ingestion + preprocessing on toy data, and the `ddharmon` CLI entry point. `--full`
+      additionally installs `ddharmon[all]` and exercises the embedding stack on toy data (slow;
+      downloads a model; no API key needed).
+
+   **A verification failure means a published, immutable release is broken — triage it**
+   (investigate, then **yank** the bad version on PyPI and cut a patch release). This step is a
+   diagnostic gate; it does **not** and cannot roll back the publish.
 
 ## Notes
 
 - **Irreversible:** a PyPI version number can never be reused or re-uploaded. Always do the
-  local `build` + `twine check` dry-run first.
+  local `build` + `twine check` dry-run first; `verify_release.py` is the *post*-publish safety net.
 - Version is declared only in `pyproject.toml`; the build backend is **hatchling** and the
   package targets `requires-python = ">=3.12"`.
 - `ddharmon` 0.1.0–0.4.0 on PyPI were an unrelated early package (a BioMapper2 client, since
