@@ -3,13 +3,14 @@ name: Publish to PyPI
 # Builds the sdist + wheel and uploads them to PyPI when a GitHub Release is
 # published. Uses PyPI Trusted Publishing (OIDC) — NO API token is stored.
 #
-# Releases are cut from the publishing mirror `trentleslie/ddharmon` (Trent owns
-# the `ddharmon` PyPI name). Development is canonical in `Phenome-Health/ddharmon`;
-# its content is mirrored into the publishing repo before each release.
+# Releases are cut from this canonical repo, `Phenome-Health/ddharmon`, so anyone
+# with write access here (e.g. Bhargav) can publish. Trent owns the `ddharmon` PyPI
+# name and registers this repo as the trusted publisher. `trentleslie/ddharmon` is
+# a mirror (used for Greptile reviews) and does not publish.
 #
 # One-time setup (by a PyPI *owner* of the `ddharmon` project, i.e. Trent):
 #   PyPI → project `ddharmon` → Settings → Publishing → Add a trusted publisher:
-#     Owner:           trentleslie
+#     Owner:           Phenome-Health
 #     Repository:      ddharmon
 #     Workflow name:   publish.yml
 #     Environment:     pypi
