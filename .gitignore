@@ -1,6 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[cod]
+*.py[codz]
 *$py.class
 
 # C extensions
@@ -20,9 +20,11 @@ parts/
 sdist/
 var/
 wheels/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # PyInstaller
 *.manifest
@@ -42,16 +44,35 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
-*.py,cover
+*.py.cover
 .hypothesis/
 .pytest_cache/
+cover/
 
 # Translations
 *.mo
 *.pot
 
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# UV
+#uv.lock
+
 # Environments
 .env
+.envrc
 .venv
 env/
 venv/
@@ -59,27 +80,94 @@ ENV/
 env.bak/
 venv.bak/
 
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
 # mypy
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
-# ruff
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# Ruff stuff:
 .ruff_cache/
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
+# PyPI configuration file
+.pypirc
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Cursor
+.cursorignore
+.cursorindexingignore
 
-# pyenv
-.python-version
+# =============================================================================
+# Project-specific
+# =============================================================================
 
-# OS
-.DS_Store
-Thumbs.db
+# Data files (large, potentially sensitive)
+data/*
+!data/examples/
+!data/review/
+!data/fixtures/
+!data/benchmarks/
+
+# Local study/cohort data directories (keep local, not on remote)
+data/examples/*/
+
+# CDE data (large JSON, keep local)
+data/examples/cde/
+
+# Results and outputs
+results/
+outputs/
+logs/
+
+# Model artifacts
+*.npy
+*.faiss
+*.bin
+*.safetensors
+
+# HuggingFace cache (models downloaded at runtime)
+.cache/
+
+# SQLite embedding cache
+*.db
+*.sqlite
+*.sqlite3
+
+# Exported files
+*.xlsx
+*.csv
+!data/examples/*.csv
+!data/benchmarks/**/*.csv
+!data/benchmarks/**/*.xlsx
+!data/benchmarks/**/*.tsv
+
+# Temp/lock files
+*.tmp
+.~lock.*
+
+# Visualization outputs
+*.png
+*.pdf
+!docs/**/*.pdf
+!docs/**/*.png
+
+# Local agent/session state (keep local config out of git, but share skills)
+.claude/*
+!.claude/skills/
