@@ -1,318 +1,156 @@
-# ddharmon
+# ddharmon — Data Dictionary Harmonization Tool
 
-Python client for the **BioMapper2 API** — map biological entity names to
-standardized knowledge-graph identifiers (CHEBI, HMDB, PubChem, RefMet, and more).
+ddharmon harmonizes biomedical **data dictionaries**: it identifies clusters of equivalent
+variables across studies and recommends a Common Data Element (CDE) anchor for each — routing
+every recommendation to expert review.
 
-```python
-from ddharmon import map_entity
+![ddharmon in the Phenome Health data-harmonization ecosystem](docs/ph-ecosystem-v1.png)
 
-result = map_entity("L-Histidine")
-print(result.primary_curie)     # RM:0129894
-print(result.confidence_tier)   # high
-print(result.ids_for("CHEBI"))  # ['15971']
+*Where ddharmon sits: cluster variables + CDEs → anchor a CDE per sub-cluster (or generate a novel
+one) → expert review — alongside related public tools and the broader Phenome Health stack.*
+
+## Related work
+
+Framing biomedical variable/CDE harmonization as an **embedding → clustering → optional LLM**
+problem is an active line of work; ddharmon builds directly on it. The closest tools (full lineage
+and citations in [`docs/v1_methods.md`](docs/v1_methods.md)):
+
+- **CDEMapper** (Wang et al., *JAMIA* 2025) — LLM-powered mapping of local data elements to NIH CDEs
+  via semantic indexing + BM25 + GPT candidates + human review. *Per-element lookup.*
+- **Krishnamurthy et al., 2025** (arXiv:2506.02160) — embeds ~24k NIH CDEs and clusters them with
+  HDBSCAN, then LLM-labels the clusters. *Clusters the target CDE repository.*
+- **Salimi et al., 2025** (*Sci Rep*) — the **PASSIONATE** Parkinson's variable-mapping ground truth;
+  shows language-model embeddings beat fuzzy string matching for **pairwise** cohort harmonization
+  (frames matching as a clustering task, but stops at t-SNE visualization).
+- **DataTecnica — DIVER / RoP** (Long et al., medRxiv 2024) — LLMs generate and audit CDEs at scale
+  (**GenCDEs**); the RoP release ships ~1.33M harmonized CDEs with embeddings. *Closest to generating
+  novel CDEs.*
+- **Harmony** (McElroy et al., *BMC Psychiatry* 2024), **Semantic Search Helper** (Gottfried 2025),
+  **datastew**, and **BDI-Kit** (Lopez et al., *Patterns* 2026) — embedding/LLM harmonization and
+  schema/value-matching siblings.
+
+## What ddharmon adds
+
+These tools tend to cluster *either* a CDE repository *or* a single cohort, use a single semantic
+vector, and map element-by-element. ddharmon targets the gaps that matter for harmonizing **many
+studies at once**:
+
+- **Multi-cohort, source *and* target together.** Cohort variables and the NIH CDE catalog are
+  embedded and clustered in one space, so equivalent variables across many studies surface as a
+  single cluster — not one pairwise lookup at a time.
+- **Dual-vector, value-aware sub-clustering.** Each field gets a **semantic** vector (what it
+  measures) *and* a **value** vector (how it is answered). Semantic vectors cluster the concept;
+  **value vectors sub-cluster within a concept by encoding shape** — so "age in years" and "age
+  bracket" land in different sub-clusters. Antecedents use a single vector and flat clusters.
+- **A recommended CDE anchor per sub-cluster — with a novel-CDE path.** Each value sub-cluster is
+  anchored to the best in-cluster CDE (medoid → canonicalness → metadata richness). When **no
+  existing CDE fits**, the sub-cluster is flagged for a **generated (GenCDE) novel CDE** instead of
+  being forced onto a poor match.
+- **adopt / refine / novel → expert review.** One classify-only LLM call per sub-cluster proposes
+  adopt / refine / novel against the anchor and routes every recommendation to **expert-in-the-loop
+  (EITL)** review — nothing is auto-applied.
+
+## How it works
+
+```
+ingest (cohorts + CDE)
+  → dual-vector embed (semantic + value)
+    → semantic cluster (BERTopic)
+      → value sub-cluster (HDBSCAN on value vectors, per topic)
+        → CDE anchor per sub-cluster (medoid → best in-cluster CDE; GenCDE fallback)
+          → adopt / refine / novel  (single classify-only LLM call)
+            → EITL review queue
 ```
 
----
+Full algorithm, parameters, and lineage are in [`docs/v1_methods.md`](docs/v1_methods.md). The
+research contributions held for a pending publication — LLM coherence judging, concept labeling,
+transformation-spec authoring, granularity-loss detection, deep recursive clustering, and a CDE
+common data model — are **not in v1**; see [`CHANGELOG.md`](CHANGELOG.md).
 
-## Installation
+## How to use
+
+### Quick start
+
+Requirements: **Python 3.12+** and [uv](https://github.com/astral-sh/uv).
 
 ```bash
-# Core (async HTTP client + Pydantic models)
-pip install ddharmon
+git clone https://github.com/Phenome-Health/ddharmon.git
+cd ddharmon
+uv sync --extra all
+cp .env.example .env        # set ANTHROPIC_API_KEY for the classify pass (sync/batch)
 ```
 
----
+Then open the end-to-end notebook **`notebooks/clustering/v1_harmonization_pipeline.ipynb`**, or call
+the Python API directly:
 
-## Getting an API key
+```python
+from ddharmon.embedding import SentenceTransformerProvider, embed_dictionary
+from ddharmon.harmonization import harmonize_dictionaries, export_eitl_queue
 
-The BioMapper2 API requires an API key. To request access, email
-[trent.leslie@phenomehealth.org](mailto:trent.leslie@phenomehealth.org).
+provider = SentenceTransformerProvider()
+embedded = [embed_dictionary(dd, provider=provider) for dd in dictionaries]  # cohorts + NIH_CDE
+result = harmonize_dictionaries(embedded, classify=classify_via_batch)        # batch-backed LLM
+export_eitl_queue(result, "eitl_queue.tsv")
+```
 
-Once you have a key, set it in your environment:
+> The NIH CDE catalog is not bundled. To anchor against CDEs, flatten the CDE repository locally with
+> `scripts/flatten_cde_repo.py <All-CDEs.json> <out.tsv>`; without it, the pipeline still clusters and
+> sub-clusters cohort variables (`cdeSet = none`).
+
+### Installation
+
+The core install is lightweight; optional extras unlock additional capabilities.
+
+| Extra | Use case |
+|-------|----------|
+| *(none)* | Core ingestion + lexical matching |
+| `embeddings` | sentence-transformers + faiss-cpu — semantic embedding + vector search |
+| `clustering` | scikit-learn, UMAP, plotly |
+| `bertopic` | BERTopic topic modeling |
+| `llm` | openai, anthropic — LLM classify / rerank |
+| `all` | everything above (required to run the full pipeline + notebook) |
+| `dev` | `all` + pytest, ruff, black, pyright |
+
 ```bash
-export BIOMAPPER_API_KEY=your-key-here
+pip install "ddharmon[all]"          # full pipeline
+# or, with uv (recommended for development):
+uv sync --extra all
 ```
-
-Or add it to a `.env` file in your project root:
-```
-BIOMAPPER_API_KEY=your-key-here
-```
-
-ddharmon will pick it up automatically from either location.
-
----
-
-## Quick start
-
-### Single lookup (synchronous)
-
-```python
-from ddharmon import map_entity
-
-result = map_entity("L-Histidine")
-
-print(result.resolved)          # True
-print(result.primary_curie)     # RM:0129894
-print(result.chosen_kg_id)      # CHEBI:15971
-print(result.confidence_score)  # 2.489
-print(result.confidence_tier)   # high  (≥2.0)
-print(result.ids_for("CHEBI"))  # ['15971']
-print(result.ids_for("refmet_id"))  # ['RM0129894']
-```
-
-### Batch mapping (synchronous)
-
-```python
-from ddharmon import map_entities, summarize
-
-records = [
-    {"name": "L-Histidine"},
-    {"name": "Glucose", "identifiers": {"HMDB": "HMDB00122"}},
-    {"name": "Sphinganine"},
-]
-
-results = map_entities(records, progress=True)  # tqdm bar with [notebook]
-summary = summarize(results)
-
-print(f"{summary.resolved}/{summary.total_queried} resolved")
-print(f"Resolution rate: {summary.resolution_rate:.1%}")
-print(summary.vocabulary_coverage)
-```
-
-Inputs are auto-chunked at 1000 entities per request against the native
-`POST /map/batch` endpoint, so 10,000 records cost 10 round-trips.
-
-### Dataset upload (synchronous)
-
-For larger inputs, hand the server a TSV/CSV file directly and stream
-results back. The server processes the file row-by-row over the
-`POST /map/dataset/stream` endpoint:
-
-```python
-from pathlib import Path
-from ddharmon import map_dataset_file_sync
-
-result = map_dataset_file_sync(
-    Path("compounds.tsv"),
-    name_column="name",
-    provided_id_columns=["hmdb_id"],
-    progress=True,         # tqdm bar
-    total_hint=1000,       # optional; enables % progress
-)
-result.raise_for_error()   # opt-in: raise BioMapperError if the stream truncated
-print(f"resolved {sum(1 for r in result.results if r.resolved)} of {len(result.results)}")
-```
-
-`name_column` and `provided_id_columns` are required — the server uses
-them to map your file's columns to entity names and identifier hints.
-For per-result streaming into a UI or custom processing, use the async
-`BioMapperClient.map_dataset_file_iter` method (see the tutorial
-notebook in `notebooks/`).
-
-### Discovering what the API supports
-
-```python
-from ddharmon import list_annotators, list_vocabularies, list_entity_types
-
-for a in list_annotators():
-    print(f"{a.slug:30s} {a.name}")
-
-# 300+ supported vocabularies (CHEBI, HMDB, PubChem, …)
-vocabs = list_vocabularies()
-print(f"{len(vocabs)} vocabularies supported")
-
-# Biolink entity types with their known aliases
-for et in list_entity_types():
-    print(f"{et.type}: {', '.join(et.aliases)}")
-```
-
-### Async usage
-
-```python
-import asyncio
-from ddharmon import BioMapperClient
-
-async def main() -> None:
-    async with BioMapperClient() as client:
-        # Verify connectivity
-        health = await client.health_check()
-        print(health)  # {'status': 'healthy', ...}
-
-        # Single
-        result = await client.map_entity(
-            "L-Histidine",
-            identifiers={"HMDB": "HMDB00177"},
-        )
-
-        # Batch — auto-chunked at 1000 entities per request
-        results = await client.map_entities(
-            [{"name": "L-Histidine"}, {"name": "Glucose"}],
-            progress=True,
-        )
-
-        # Stream from a file — per-result as they arrive
-        from pathlib import Path
-        async for r in client.map_dataset_file_iter(
-            Path("compounds.tsv"),
-            name_column="name",
-            provided_id_columns=["hmdb_id"],
-        ):
-            print(r.query_name, r.primary_curie)
-
-asyncio.run(main())
-```
-
-`map_dataset_file_iter` is the primitive for UIs and custom processing that
-want per-result reactivity. Callers needing a blocking, fully-collected
-result should use `map_dataset_file_sync` instead (see above).
-
-### Jupyter notebooks
-
-Apply `nest_asyncio` before using sync helpers inside a running event loop:
-
-```python
-import nest_asyncio
-nest_asyncio.apply()  # required in Jupyter
-
-from ddharmon import map_entities
-results = map_entities([{"name": "L-Histidine"}], progress=True)
-```
-
-### Preprocessing functions
-
-```python
-from ddharmon.extras.metabolon import clean_compound_name, extract_hmdb_id
-
-# Strip quotes and collision-energy suffixes
-clean_compound_name('"1,3-Diphenylguanidine_CE45"')  # '1,3-Diphenylguanidine'
-clean_compound_name('"4,6-DIOXOHEPTANOIC ACID"')     # '4,6-DIOXOHEPTANOIC ACID'
-clean_compound_name('L-Histidine')                   # 'L-Histidine'  (unchanged)
-
-# Extract HMDB accessions from ms1_compound_name format
-extract_hmdb_id('HMDB:HMDB03349-2257 L-Dihydroorotic acid')  # 'HMDB03349'
-extract_hmdb_id('HMDB00177')                                  # 'HMDB00177'
-extract_hmdb_id(None)                                         # None
-```
-
----
-
-## API reference
-
-### `MappingResult`
-
-| Attribute | Type | Description |
-|---|---|---|
-| `query_name` | `str` | Name submitted to the API |
-| `resolved` | `bool` | Whether any identifier was returned |
-| `primary_curie` | `str \| None` | First CURIE in the response |
-| `chosen_kg_id` | `str \| None` | Resolver-selected knowledge graph ID |
-| `confidence_score` | `float \| None` | Highest score across annotators |
-| `confidence_tier` | `str` | `"high"` (≥2.0) / `"medium"` (1–2) / `"low"` (<1) / `"unknown"` |
-| `identifiers` | `dict[str, list[str]]` | Vocabulary → IDs, e.g. `{"CHEBI": ["15971"]}` |
-| `hmdb_hint` | `str \| None` | HMDB hint passed in the request |
-| `error` | `str \| None` | Error message if mapping failed |
-
-```python
-result.ids_for("CHEBI")        # ['15971']
-result.ids_for("refmet_id")    # ['RM0129894']
-result.ids_for("PUBCHEM.COMPOUND")  # []
-```
-
-### `DatasetMappingResult`
-
-Return type of `map_dataset_file_sync`. Captures per-row results plus an
-opt-in error signal for partial runs.
-
-| Attribute | Type | Description |
-|---|---|---|
-| `results` | `list[MappingResult]` | Per-row mapping outcomes in server-emitted order |
-| `stats` | `dict[str, Any]` | Server-provided summary. Empty unless the stream emits a terminal summary line |
-| `metadata` | `ApiMetadata` | Request metadata; stays at defaults when the stream truncates before completion |
-| `error` | `str \| None` | Mid-stream transport failure text. `None` on clean runs |
-
-```python
-result.raise_for_error()   # raises BioMapperError if .error is set; else no-op
-```
-
-`raise_for_error` mirrors `httpx.Response.raise_for_status` and turns the
-partial-result contract into an explicit caller opt-in — silent consumption
-of a truncated run (using `.results` without checking `.error`) is the
-footgun this model is designed to prevent.
-
-> **Note:** `confidence_score` on dataset-stream results is always `None` —
-> the `/map/dataset/stream` endpoint emits a slimmer per-row payload than
-> `/map/batch` and does not include the annotator `assigned_ids` block.
-> Use `map_entity` / `map_entities` if you need confidence tiers.
-
-### Confidence tiers
-
-| Score | Tier | Recommended action |
-|---|---|---|
-| ≥ 2.0 | `high` | Accept without review |
-| 1.0–2.0 | `medium` | Quick sanity check |
-| < 1.0 | `low` | Manual review recommended |
-| `None` | `unknown` | No score returned (e.g. HMDB-hint resolved) |
-
-### Error handling
-
-```python
-from ddharmon import (
-    BioMapperError,       # base class
-    BioMapperAuthError,   # 401/403 — bad API key
-    BioMapperRateLimitError,  # 429 — throttled
-    BioMapperServerError,     # 5xx
-    BioMapperTimeoutError,    # request timeout
-    BioMapperConfigError,     # missing API key / bad config
-)
-
-try:
-    result = map_entity("Glucose")
-except BioMapperRateLimitError as e:
-    print(f"Throttled. Retry after: {e.retry_after}s")
-except BioMapperAuthError:
-    print("Check your BIOMAPPER_API_KEY")
-```
-
-In batch mode (`map_entities`), per-record errors are caught and returned as
-`MappingResult(error=...)` rather than aborting the batch.
-
-Dataset streaming (`map_dataset_file_sync`) uses a two-tier contract:
-
-- **Initial-request errors** (401, 422, 500, connect timeout) raise as typed
-  exceptions — these happen before any row is processed, so partial results
-  don't exist to preserve.
-- **Mid-stream transport failures** are captured into
-  `DatasetMappingResult.error` with the partial results preserved in
-  `.results`. Call `.raise_for_error()` to get exception semantics, or
-  inspect `.error` directly for "accept partial, log the rest" workflows.
-
-Callback exceptions raised from `on_result` propagate unwrapped and
-**replace the return value** — partial results collected up to that point
-are lost. For UI consumers with failure-prone callbacks, wrap the callback
-body in your own try/except if you want partial data to survive.
-
----
 
 ## Development
 
 ```bash
-git clone https://github.com/trentleslie/ddharmon
-cd ddharmon
-poetry install --with dev --extras all
-
-make check          # format → lint → type-check → test
-make test           # tests only
-make coverage       # HTML coverage report
+./scripts/check.sh     # lint, format, typecheck, test
+./scripts/fix.sh       # auto-fix lint + format
+pytest                 # tests
 ```
 
----
+### Project structure
+
+```
+src/ddharmon/
+├── models/          # data models (plain dataclasses)
+├── ingestion/       # multi-cohort + CDE dictionary parsers
+├── embedding/       # dual-vector embedding (semantic + value), SQLite cache
+├── clustering/      # BERTopic semantic clustering + value sub-clustering
+├── harmonization/   # v1: CDE anchoring + adopt/refine/novel + EITL export
+├── matching/        # pairwise 1:1 matching (built; not in the v1 surface)
+├── llm/             # LLM clients + Anthropic Batch API
+├── values/          # value-encoding parsing
+└── export/          # visualization (dendrograms, UMAP, Plotly)
+notebooks/clustering/v1_harmonization_pipeline.ipynb
+scripts/             # flatten_cde_repo, build_clsa_csv, prompt runners, check/fix
+tests/
+```
+
+## Roadmap (beyond v1)
+
+- **Web GUI** — under development; the point-and-click app (upload dictionaries → run with live
+  progress → review recommendations → export) will ship as added functionality of **biomapper-ui**.
+- Pairwise **1:1 mapping** as a first-class surface (the engine is built).
+- **Standards mapping** (LOINC / SNOMED / OMOP).
+- LLM coherence judging, concept labeling, and transformation-spec authoring (publication-pending).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
----
-
-## Related
-
-- **BioMapper2 API**: `https://biomapper.expertintheloop.io`
+MIT — see [LICENSE](LICENSE). © 2026 Phenome Health.
