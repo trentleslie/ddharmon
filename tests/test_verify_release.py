@@ -8,6 +8,7 @@ release-time check, not a unit test.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import urllib.error
 from pathlib import Path
 
@@ -73,7 +74,15 @@ def test_wait_for_pypi_retries_transient_errors(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_verify_cleans_up_tempdir_on_install_failure(monkeypatch):
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("install failed"),
+        subprocess.CalledProcessError(1, ["uv", "venv"]),  # uv venv non-zero exit
+        FileNotFoundError("uv"),  # uv missing from PATH
+    ],
+)
+def test_verify_cleans_up_tempdir_on_install_failure(monkeypatch, exc):
     monkeypatch.setattr(vr, "wait_for_pypi", lambda *a, **k: True)
     created: dict[str, str] = {}
     real_mkdtemp = vr.tempfile.mkdtemp
@@ -86,10 +95,11 @@ def test_verify_cleans_up_tempdir_on_install_failure(monkeypatch):
     monkeypatch.setattr(vr.tempfile, "mkdtemp", _tracking_mkdtemp)
 
     def _boom(*a, **k):
-        raise RuntimeError("install failed")
+        raise exc
 
     monkeypatch.setattr(vr, "install_into_venv", _boom)
 
+    # No traceback escapes; clean failure signal + tempdir cleaned up.
     assert vr.verify("0.5.0", full=False, timeout=1) is False
     assert not Path(created["dir"]).exists()
 

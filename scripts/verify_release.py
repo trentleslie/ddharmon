@@ -116,8 +116,11 @@ def verify(version: str, *, full: bool, timeout: float) -> bool:
             cmd.append("--full")
         smoke = subprocess.run(cmd, text=True)
         return smoke.returncode == 0
-    except RuntimeError as exc:
-        print(f"  install failed: {exc}")
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        # OSError covers a missing `uv` (FileNotFoundError); SubprocessError covers
+        # `uv venv`'s non-zero exit (CalledProcessError). Keep the clean failure UX
+        # rather than letting a raw traceback escape to main() on release day.
+        print(f"  install/verify step failed: {exc}")
         return False
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
