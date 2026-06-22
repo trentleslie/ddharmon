@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import ddharmon
 from click.testing import CliRunner
 
+import ddharmon
 from ddharmon.cli import main
 
 

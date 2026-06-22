@@ -12,9 +12,11 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 VENV_BIN="$PROJECT_DIR/.venv/bin"
 
 if [ -d "$VENV_BIN" ]; then
-    RUN="$VENV_BIN/"
+    # Call the venv binary directly. Quoting "$VENV_BIN/$1" keeps paths with
+    # spaces (e.g. "Google Drive") intact.
+    run() { "$VENV_BIN/$1" "${@:2}"; }
 elif command -v uv &>/dev/null; then
-    RUN="uv run "
+    run() { uv run "$@"; }
 else
     echo "Error: No .venv found and uv not installed"
     exit 1
@@ -31,7 +33,7 @@ FAILED=0
 # Ruff linting
 echo ""
 echo ">>> Ruff (linting)..."
-if ${RUN}ruff check src/ tests/; then
+if run ruff check src/ tests/; then
     echo -e "${GREEN}✓ Ruff passed${NC}"
 else
     echo -e "${RED}✗ Ruff failed${NC}"
@@ -41,7 +43,7 @@ fi
 # Black formatting check
 echo ""
 echo ">>> Black (formatting)..."
-if ${RUN}black --check src/ tests/; then
+if run black --check src/ tests/; then
     echo -e "${GREEN}✓ Black passed${NC}"
 else
     echo -e "${RED}✗ Black failed (run ./scripts/fix.sh to auto-fix)${NC}"
@@ -51,7 +53,7 @@ fi
 # Pyright type checking
 echo ""
 echo ">>> Pyright (type checking)..."
-if ${RUN}pyright src/; then
+if run pyright src/; then
     echo -e "${GREEN}✓ Pyright passed${NC}"
 else
     echo -e "${RED}✗ Pyright failed${NC}"
@@ -61,7 +63,7 @@ fi
 # Pytest
 echo ""
 echo ">>> Pytest (tests)..."
-if ${RUN}pytest tests/ -q; then
+if run pytest tests/ -q; then
     echo -e "${GREEN}✓ Pytest passed${NC}"
 else
     echo -e "${RED}✗ Pytest failed${NC}"
