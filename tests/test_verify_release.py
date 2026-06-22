@@ -56,6 +56,23 @@ def test_wait_for_pypi_times_out_cleanly(monkeypatch):
     assert vr.wait_for_pypi("ddharmon", "9.9.9", timeout=0) is False
 
 
+def test_wait_for_pypi_retries_transient_errors(monkeypatch):
+    # A 5xx (URLError subclass) must be swallowed as "not yet live", then a
+    # subsequent success returns True -- no raw traceback escapes.
+    calls = {"n": 0}
+
+    def _flaky(p, v):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError("u", 503, "service unavailable", {}, None)
+        return True
+
+    monkeypatch.setattr(vr, "pypi_version_live", _flaky)
+    monkeypatch.setattr(vr.time, "sleep", lambda s: None)
+    assert vr.wait_for_pypi("ddharmon", "0.5.0", timeout=5) is True
+    assert calls["n"] == 2
+
+
 def test_verify_cleans_up_tempdir_on_install_failure(monkeypatch):
     monkeypatch.setattr(vr, "wait_for_pypi", lambda *a, **k: True)
     created: dict[str, str] = {}

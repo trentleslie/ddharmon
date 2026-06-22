@@ -54,7 +54,15 @@ def wait_for_pypi(package: str, version: str, timeout: float, sleep: float = 10.
     attempt = 0
     while True:
         attempt += 1
-        if pypi_version_live(package, version):
+        try:
+            live = pypi_version_live(package, version)
+        except urllib.error.URLError as exc:
+            # Transient network/index error (5xx, 429, DNS, timeout — HTTPError is
+            # a URLError subclass). Treat as "not yet live" and keep polling so a
+            # blip on release day doesn't crash the gate with a raw traceback.
+            print(f"  PyPI: transient error querying {package} {version} ({exc}); will retry.")
+            live = False
+        if live:
             print(f"  PyPI: {package} {version} is live (attempt {attempt}).")
             return True
         if time.monotonic() >= deadline:
@@ -82,7 +90,10 @@ def install_into_venv(venv_dir: Path, spec: str, retries: int = 3, sleep: float 
         print(f"  install attempt {attempt}/{retries} failed (propagation lag?); retrying in {sleep:.0f}s...")
         if attempt < retries:
             time.sleep(sleep)
-    raise RuntimeError(f"could not install {spec}:\n{(last.stderr if last else '').strip()}")
+    out = (last.stdout if last else "").strip()
+    err = (last.stderr if last else "").strip()
+    detail = "\n".join(filter(None, [out, err]))
+    raise RuntimeError(f"could not install {spec}:\n{detail}")
 
 
 def verify(version: str, *, full: bool, timeout: float) -> bool:
