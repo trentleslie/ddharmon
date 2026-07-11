@@ -28,6 +28,13 @@ runs the full pipeline (ingest → embed → cluster → value sub-cluster → C
 > `scripts/flatten_cde_repo.py <All-CDEs.json> <out.tsv>`; without it, the pipeline still clusters and
 > sub-clusters cohort variables (`cdeSet = none`).
 
+## API key configuration
+
+ddharmon reads the Anthropic API key from the `ANTHROPIC_API_KEY` environment variable — you must set it
+before running the classify or batch passes. The responsibility for providing the key lies with the
+caller (a human user, script, or host application embedding ddharmon); there is no settings UI or
+per-session key handling in the library itself.
+
 ## Related work
 
 Framing biomedical variable/CDE harmonization as an **embedding → clustering → optional LLM**
