@@ -30,10 +30,11 @@ runs the full pipeline (ingest → embed → cluster → value sub-cluster → C
 
 ## API key configuration
 
-ddharmon reads the Anthropic API key from the `ANTHROPIC_API_KEY` environment variable — you must set it
-before running the classify or batch passes. The responsibility for providing the key lies with the
-caller (a human user, script, or host application embedding ddharmon); there is no settings UI or
-per-session key handling in the library itself.
+The key depends on the LLM provider you select via `get_client(provider=...)`. Anthropic-backed classify
+and batch passes read `ANTHROPIC_API_KEY`; OpenAI-backed passes read `OPENAI_API_KEY`; cached and offline
+workflows (`CachedLLMClient`) require no API key. The caller (a human user, script, or host application
+embedding ddharmon) is responsible for providing any required key; the library has no settings UI or
+per-session key handling.
 
 ## Related work
 
